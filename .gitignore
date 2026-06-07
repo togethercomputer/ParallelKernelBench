@@ -1,0 +1,6 @@
+# Folders to hold off on for now
+cost_modeling/
+reference_rooflines_code/
+
+# macOS
+.DS_Store

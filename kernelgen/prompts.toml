@@ -1,0 +1,382 @@
+[meta]
+version = "1.0"
+default_backend = "cuda"
+default_precision = "fp32"
+
+# Fallback mini-swe-agent system prompt when a [backends.*] row omits agent_system_prompt
+[agent_kernel]
+default_system_prompt = """
+You are an expert CUDA and distributed systems engineer.
+
+Hard requirements for every answer:
+- Treat the reference PyTorch code as a behavioral spec, not something to lightly wrap. **Minimize stock PyTorch on the hot path** (generic `torch` ops, opaque `torch.nn` stacks, and canned `torch.distributed` collectives) when a custom kernel / fused device-side design for the chosen backend is viable.
+- Replace NCCL / torch.distributed collectives with custom CUDA using torch.distributed._symmetric_memory (symm_mem), UVA device pointers, and utils.cuda_helpers.compile_cuda_extension for JIT compilation. **Prefer device-side communication** (peer loads/stores, symmetric buffers, explicit P2P) over host-orchestrated collective launches where you can preserve correctness.
+- **Maximize compute–communication overlap**: chunking, streams, pipelining, fusion of comm with adjacent math—encode the schedule in your kernels and buffer layout, not only by calling torch APIs in sequence.
+- Preserve the reference solution() signature and numerical correctness.
+- Follow the problem specification in the user task for tone, examples, and output format.
+"""
+
+# -------------------------------------------------------------------------
+# Shared Templates: Used by all backends with placeholders
+# -------------------------------------------------------------------------
+[shared]
+problem_statement = """
+You write custom {backend_display} to replace **high-level PyTorch and torch.distributed / NCCL-heavy paths** in the given architecture. The reference is a **correctness and API specification**, not a mandate to keep the same operator mix: re-express the workload in the **appropriate backend** ({backend_display}) wherever that unlocks speed.
+
+**Minimize stock PyTorch on the hot path.** Avoid treating off-the-shelf `torch.nn` modules, generic elementwise/tensor ops, or opaque `torch.distributed` collectives as the default implementation when the bottleneck is communication or fused math. Prefer explicit custom kernels, hand-managed buffers, and synchronization you control—only use PyTorch where the harness or interop requires it (e.g., process group setup, tensor shells, loading a compiled extension).
+
+**Prioritize device-side communication.** Favor peer data movement and reductions expressed **on device** (symmetric memory, UVA / P2P access, cooperative patterns, CUDA IPC, or backend-native device APIs) instead of repeated host-driven launches of black-box collectives when a tighter device-resident or pipelined pattern fits the problem.
+
+**Maximize compute–communication overlap.** Reason about the schedule: chunking, double-buffering, multiple streams, pipeline stages, and fused kernels so communication hides behind independent computation (or vice versa). Examples: pipelined all-gather with matmul tiles, chunked reduce-scatter fused with the next projection, overlapping broadcast with compute on unrelated chunks, ring/tree algorithms implemented where they reduce critical-path latency.
+
+You may replace or fuse collectives, reshape algorithms (ring, tree, recursive halving–doubling), or merge communication with adjacent ops. Bias heavily toward **custom {backend_display}**, **device-side data movement**, and **overlap**—not toward a minimal diff from the reference PyTorch.
+"""
+
+instruction = """
+Rewrite `solution()` to get a real speedup by **implementing the workload in the target backend** and **shrinking reliance on stock PyTorch** on the performance-critical path (keep the same signature; must run on every rank like the reference). Use symmetric memory / explicit device buffers and custom compiled code as appropriate.
+
+**Output format:** You may include a **short** strategy (one short paragraph or ≤6 bullets) that states how you exploit **device-side communication** and **compute–communication overlap**—then put **all** implementation in ```python``` fenced blocks: complete `solution()`, supporting kernels, extension/JIT loading, imports, rendezvous/buffers, etc. No long essays, no tutorial prose, no standalone test harness—only brief strategy (optional) plus working code. If you omit the strategy, the code structure must still reflect overlap and device-side patterns clearly.
+"""
+
+# -------------------------------------------------------------------------
+# Backends: Backend-specific configuration (minimal, just what varies)
+# -------------------------------------------------------------------------
+[backends.cuda]
+backend_display = "CUDA operators"
+# mini-swe-agent system message (generate_kernel_agent.py)
+agent_system_prompt = """
+You are an expert CUDA and distributed systems engineer.
+
+Hard requirements for every answer:
+- Minimize dependence on stock PyTorch for comms and hot-loop math: reimplement in CUDA + JIT (`utils.cuda_helpers.compile_cuda_extension`) rather than stacking `torch` ops and opaque collectives when a custom path is feasible.
+- Replace NCCL / torch.distributed collectives with custom CUDA using torch.distributed._symmetric_memory (symm_mem), UVA device pointers, and explicit device-side peer access where possible. On Hopper + NVSwitch, multimem (`multicast_ptr`, `multimem.ld_reduce` / `multimem.st`, signal-pad barriers) is in scope—see the bundled prompts for **both** the add example (`kernelgen/solution_ex_add.py` → `kernelgen/solution_new_add_cuda.py`) and the all-reduce example (`kernelgen/solutions_ex_allreduce.py` → `kernelgen/solutions_new_allreduce_cuda.py`). Prefer **device-resident communication patterns** and **overlap** (streams, chunking, fusion) over naive sequential collective+GEMM.
+- Preserve the reference solution() signature and numerical correctness.
+- Follow the problem specification in the user task for tone, examples, and output format.
+"""
+
+[[backends.cuda.in_context_examples]]
+label = "Example A — elementwise add (reference vs CUDA extension)"
+pytorch_solution = "kernelgen/solution_ex_add.py"
+custom_solution = "kernelgen/solution_new_add_cuda.py"
+
+[[backends.cuda.in_context_examples]]
+label = "Example B — all-reduce SUM (NCCL reference vs symm_mem + NVSwitch multimem CUDA)"
+pytorch_solution = "kernelgen/solutions_ex_allreduce.py"
+custom_solution = "kernelgen/solutions_new_allreduce_cuda.py"
+
+[backends.triton]
+backend_display = "Triton kernels"
+agent_system_prompt = """
+You are an expert GPU engineer focused on Triton and distributed GPU code.
+
+Hard requirements:
+- **Minimize stock PyTorch on the hot path**: express compute in **Triton**; avoid thick `torch.nn` / generic tensor soup when Triton + explicit buffers are clearer. Use torch.distributed / process groups only where the harness requires—push communication toward **device-visible** patterns and overlap (chunked phases, fused ops, stream scheduling).
+- Implement custom Triton kernels for the heavy work; preserve the reference solution() signature and numerical correctness.
+- Reason about **compute–communication overlap** and **device-side communication** (how data moves between peers and when compute runs concurrently)—encode that in kernel fusion and scheduling, not only in default collectives.
+- Follow the problem specification in the user task for tone, examples, and output format.
+"""
+
+[[backends.triton.in_context_examples]]
+label = "Example A — elementwise add (reference vs custom extension)"
+pytorch_solution = "kernelgen/solution_ex_add.py"
+custom_solution = "kernelgen/solution_new_add_cuda.py"
+
+[backends.parallelkittens]
+backend_display = "ParallelKittens / ThunderKittens CUDA integrations"
+# Optional: overrides generate_kernel.py default system message (symm_mem CUDA) when --backend parallelkittens.
+generate_kernel_system_prompt = """
+You are an expert CUDA and distributed systems engineer using ThunderKittens / ParallelKittens.
+
+Hard requirements for every answer:
+- Follow the **in-prompt examples**: embedded ``.cu`` with ``PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)``, ``BIND_TK_PARALLEL_TENSOR``, ``utils.cuda_helpers.compile_cuda_extension``, and ``utils.parallelkittens_runtime`` (``get_or_create_parallel_tensor``, ``get_or_create_barrier``, ``TKParallelTensor``) as in the bundled kernelgen reference→optimized pairs.
+- Prefer **ThunderKittens device-side patterns** (PGL layouts, barriers, TMA/multimem as appropriate) over stock ``torch.distributed`` collectives on the hot path when the problem fits; preserve the reference ``solution()`` signature and numerical correctness.
+- Follow the user prompt below for tone, examples, and output format.
+"""
+agent_system_prompt = """
+You are an expert CUDA engineer using ParallelKittens / ThunderKittens in this codebase.
+
+Hard requirements:
+- **Reduce reliance on generic PyTorch** for the optimized region: use TK/runtime primitives and custom CUDA paths as in `solutions_parallelkittens` and the kernelgen pairs (`kernelgen/solutions_ex_allreduce.py` → `kernelgen/solutions_new_allreduce_parallelkittens.py`, `kernelgen/solutions_ex_alltoall.py` → `kernelgen/solutions_new_alltoall_parallelkittens.py`) instead of default `torch` stacks where performance matters.
+- Use patterns compatible with utils.parallelkittens_runtime (e.g. TKParallelTensor, barriers) and utils.cuda_helpers.compile_cuda_extension; prioritize **device-side coordination**, **peer communication**, and **overlap** with compute in how you structure tiles and phases.
+- Preserve the reference solution() signature and numerical correctness.
+- Follow the problem specification in the user task for tone, examples, and output format.
+"""
+
+[[backends.parallelkittens.in_context_examples]]
+label = "Example A — all-reduce SUM (NCCL reference vs ThunderKittens PGL + multicast + barriers)"
+pytorch_solution = "kernelgen/solutions_ex_allreduce.py"
+custom_solution = "kernelgen/solutions_new_allreduce_parallelkittens.py"
+
+[[backends.parallelkittens.in_context_examples]]
+label = "Example B — all-to-all (NCCL reference vs ThunderKittens TMA + PGL + barriers)"
+pytorch_solution = "kernelgen/solutions_ex_alltoall.py"
+custom_solution = "kernelgen/solutions_new_alltoall_parallelkittens.py"
+
+# -------------------------------------------------------------------------
+# Precision: Precision-specific configuration
+# -------------------------------------------------------------------------
+[precision.fp32]
+precision_display = "FP32 (32-bit floating point)"
+
+[precision.fp16]
+precision_display = "FP16 (16-bit floating point)"
+
+[precision.bf16]
+precision_display = "BF16 (bfloat16)"
+
+# -------------------------------------------------------------------------
+# Templates: Reusable text blocks with placeholders
+# -------------------------------------------------------------------------
+[templates.common]
+
+# --- Architecture Presentation ---
+# Used to present the reference architecture/PyTorch kernel that needs optimization
+arch_block = """
+You are given the following PyTorch code to optimize:
+
+{ref_arch_src}
+
+"""
+
+# -------------------------------------------------------------------------
+# Examples Block
+# -------------------------------------------------------------------------
+# Shows example(s) of input architecture and optimized versions
+# Each backend lists examples under [[backends.<name>.in_context_examples]]
+
+examples_block = """
+{examples_intro}
+
+{examples_entries}
+"""
+
+# Different introductions for code examples depending on if it is one shot or few shot
+
+example_intro_one_shot = """
+Here's an example to show you the syntax of inline embedding custom {backend_display} in PyTorch:
+"""
+example_intro_few_shot = """
+Here are examples showing how to embed custom {backend_display} in PyTorch:
+"""
+
+
+# Will inject an input example and output example according to the backend. 
+
+example_entry_template = """
+{example_label}
+
+Input solution function that runs on every rank:
+
+{input_code}
+
+Optimized with {backend_display}:
+
+{output_code}
+"""
+
+
+# -------------------------------------------------------------------------
+#  Precision Information 
+# -------------------------------------------------------------------------
+# Specifies the target precision for optimization
+
+precision_note = """
+Note: The kernels should be optimized for {precision_display} precision.
+"""
+
+# Filled in by generate_kernel.py: either empty or concatenated hardware templates.
+hardware_context = """
+{hardware_context_body}
+"""
+
+# -------------------------------------------------------------------------
+# mini-swe-agent (generate_kernel_agent.py): task wrapper + remote eval instructions
+# -------------------------------------------------------------------------
+[templates.agent_kernel]
+task = """
+You are authoring a solution for ParallelKernelBench.
+
+Repository root (every shell action runs here unless you prefix cd): {project_root}
+
+Deliverable: one complete Python module at **{rel}** (path relative to repo root).
+
+Steps:
+1. Optionally read {ref_rel} to confirm the solution() API you must preserve.
+2. Implement the optimized solution and write the full file to {rel}. Create the directory solutions_{backend} if needed (mkdir -p).
+3. You may run: python -m py_compile {rel}
+{remote_block}
+4. Finish by executing this command alone on its own line (no chaining with && or ;):
+   echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+
+--- Problem specification ---
+
+{prompt_body}
+"""
+
+remote_dryrun = """
+## Remote GPU check (your cluster / SSH) — run before full eval if provided
+
+Run this **exact** command from the repo root (or as documented in your environment):
+
+```bash
+{dry_command}
+```
+
+If exit code is non-zero, read stdout/stderr, fix **{rel_target}**, and re-run until it succeeds.
+(Problem shorthand: `{problem_arg}` → stem `{problem_stem}`; edited file: **{rel_target}**.)
+"""
+
+remote_eval = """
+## Remote GPU verification — required before you finish
+
+Use the commands your operator configured. After **{rel_target}** exists, run the checks below (if a separate dryrun was configured, it appears above as **Remote GPU check**).
+
+Optional dryrun reference (may be a comment if unused):
+```bash
+{dry_command}
+```
+
+**Full eval** (correctness and, when enabled, performance vs reference):
+```bash
+{eval_command}
+```
+
+Interpret output from **your** harness: e.g. `all trials match`, `PKB_EVAL_JSON` with `"all_ok": true`, and speedup / timing lines when measure performance was enabled. On failure or mismatch, revise **{rel_target}** and re-run. After correctness is solid, iterate to maximize speedup vs the reference while preserving numerical agreement across trials.
+"""
+
+# -------------------------------------------------------------------------
+# Custom Templates: Optional user-defined building blocks
+# -------------------------------------------------------------------------
+# Add any custom template blocks here and reference them from components lists.
+
+# Example:
+
+custom_problem_statement = """
+Custom prompt intro goes here. You can reference {backend_display} or any
+other placeholder supported in the shared context.
+"""
+
+
+# -------------------------------------------------------------------------
+# Hardware Templates: GPU-specific information blocks
+# -------------------------------------------------------------------------
+[templates.hardware]
+hardware_header = """
+Here is some information about the underlying hardware that you should keep in mind.
+"""
+
+hardware_specs = """
+The GPU that will run the kernel is NVIDIA {gpu_name}, {gpu_architecture} architecture.
+
+{gpu_specs_bullets}
+"""
+
+hardware_definitions = """
+Here are some concepts about the GPU architecture that could be helpful:
+
+{gpu_definitions_bullets}
+"""
+
+hardware_best_practices = """
+Here are some best practices for writing kernels on GPU:
+
+{gpu_best_practices_bullets}
+"""
+
+# -------------------------------------------------------------------------
+# Options: Different prompt construction modes
+# -------------------------------------------------------------------------
+
+[options.zero_shot]
+# Zero-shot: No examples provided—the model must infer everything from the description
+components = ["problem_statement", "arch_block", "precision_note", "instruction"]
+
+[options.one_shot]
+# One-shot: Includes a single example to demonstrate the task
+# This is the default KernelBench will use for model baseline performance 
+components = ["problem_statement", "examples_block", "arch_block", "precision_note", "instruction"]
+requires_example = "one_shot"
+
+[options.few_shot]
+# Few-shot: Multiple examples (falls back to one-shot if backend lacks few-shot entries)
+components = ["problem_statement", "examples_block", "arch_block", "precision_note", "instruction"]
+requires_example = "few_shot"
+
+# Used by kernelgen/generate_kernel.py: same as one_shot plus hardware_context (body may be empty).
+[options.generate_kernel]
+components = ["problem_statement", "examples_block", "arch_block", "precision_note", "hardware_context", "instruction"]
+
+[options.generate_kernel_zero_shot]
+components = ["problem_statement", "arch_block", "precision_note", "hardware_context", "instruction"]
+
+
+# -------------------------------------------------------------------------
+# Hardware profiles (keys match --hardware in generate_kernel.py: h100_8, b200_72)
+# Values fill templates.hardware via str.format.
+# -------------------------------------------------------------------------
+[hardware_profiles.h100_8]
+profile_display = "DGX H100 8-GPU (NVLink domain)"
+gpu_name = "H100 80GB SXM"
+gpu_architecture = "Hopper"
+gpu_specs_bullets = """
+- Eight GPUs per node; assume peers are NVLink-connected within the same domain.
+- High bisection bandwidth on-node; prefer kernels that exploit tensor cores and async copies.
+"""
+gpu_definitions_bullets = """
+- **Tensor cores**: Use where possible for FP16/BF16/TF32 dense math; fall back to CUDA cores where shapes do not map cleanly.
+- **NVLink / P2P**: Device pointers from symmetric memory should be valid for direct loads/stores across peers in this profile.
+"""
+gpu_best_practices_bullets = """
+- Overlap communication with computation where the schedule allows (e.g., chunked collectives, double-buffering).
+- Keep working sets in fast memory hierarchy; minimize cross-GPU traffic for hot loops.
+"""
+
+[hardware_profiles.b200_72]
+profile_display = "NVL72 / Blackwell rack-scale GPU complex"
+gpu_name = "Blackwell-class accelerators (e.g., B200 family in NVL72)"
+gpu_architecture = "Blackwell"
+gpu_specs_bullets = """
+- Rack-scale NVLink topology (e.g., NVL72-class): many GPUs with very high aggregate NVLink bandwidth.
+- Favor algorithms that minimize global barriers and hide latency with compute or pipelining.
+"""
+gpu_definitions_bullets = """
+- **Scale-out**: Many peers; ring/tree-style reductions and fused kernels can matter more than on small clusters.
+- **Memory**: Large aggregate memory; still optimize per-GPU working set and locality.
+"""
+gpu_best_practices_bullets = """
+- Exploit deep fusion and overlap; avoid naive O(peers) sequential patterns when a hierarchical approach fits.
+- Validate symmetric-memory pointer usage against the actual process group and rendezvous pattern you implement.
+"""
+
+
+# -------------------------------------------------------------------------
+# Custom Prompts: user-defined prompt compositions
+# -------------------------------------------------------------------------
+
+
+[custom_prompts.custom]
+# Use this name with the CLI: pass custom_prompt_key=custom to
+# generate_samples.py, generate_and_eval_single_sample.py, or the modal variant
+# to load this block structure instead of the standard backend/option combo. 
+# If you want to add another prompt (e.g., [custom_prompts.custom2]), call it with
+# custom_prompt_key=custom2 instead.
+
+# Define prompt composition here (ordering/extra sections).
+# Backend, precision, hardware info, etc. must still be set via CLI flags
+# Backend and precision in particular are required for evaluating your kernels.
+# Hardware_info information must also be defined if you use any of the hardware 
+# templates.
+
+# Order the components for the prompt in whatever way you want and use any
+# created templates you want
+components = [
+    "custom_problem_statement",
+    "problem_statement",
+    "hardware_header",
+    "hardware_specs",
+    "hardware_best_practices",
+    "arch_block",
+    "precision_note",
+    "examples_block",
+    "instruction",
+]
