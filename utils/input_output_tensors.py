@@ -1217,19 +1217,18 @@ def create_input_tensor(
     # 60: physicsnemo_distributed_irfft
     elif problem_id == 60:
         _seed(problem_id, 0, trial)
-        B = max(1, M // 64)
-        H = _round_up_multiple(max(16, M), world_size)
-        W = _round_up_multiple(max(16, N), world_size)
+        B, C, H, W = 2, 10, 720, 1440
+        assert H % world_size == 0, f"H ({H}) must be divisible by world_size ({world_size})"
         H_local = H // world_size
-        x_real = torch.randn((B, H, W), dtype=torch.float32, device=dev)
-        x_full = torch.fft.rfft2(x_real, s=(H, W), dim=(1, 2), norm="ortho")
-        x = x_full[:, rank * H_local : (rank + 1) * H_local, :].contiguous()
-        return (x, (H, W), (1, 2), "ortho", None)
+        x_real = torch.randn((B, C, H, W), dtype=torch.float32, device=dev)
+        x_full = torch.fft.rfft2(x_real, s=(H, W), dim=(-2, -1), norm="ortho")
+        x = x_full[:, :, rank * H_local : (rank + 1) * H_local, :].contiguous()
+        return (x, (H, W), (-2, -1), "ortho", None)
 
     # 61: gsplat_3d_gaussian_splatting
     elif problem_id == 61:
         _seed(problem_id, rank, trial)
-        n_local = max(8, min(M, 256))
+        n_local = max(1000, min(M, 10000))
         channels = 3
         image_width = int(max(64, min(N, 512)))
         image_height = int(max(64, min(M, 512)))
@@ -1239,7 +1238,7 @@ def create_input_tensor(
         means[:, 1] = (torch.rand(n_local, dtype=torch.bfloat16, device=dev) - 0.5) * 1.5
         means[:, 2] = torch.rand(n_local, dtype=torch.bfloat16, device=dev) * 2.0 + 2.0
         quats = torch.randn((n_local, 4), dtype=torch.bfloat16, device=dev)
-        scales = torch.rand((n_local, 3), dtype=torch.bfloat16, device=dev) * 0.04 + 0.02
+        scales = torch.rand((n_local, 3), dtype=torch.bfloat16, device=dev) * 0.02
         opacities = torch.rand((n_local,), dtype=torch.bfloat16, device=dev) * 0.8 + 0.1
         colors = torch.rand((n_local, channels), dtype=torch.bfloat16, device=dev)
 
@@ -1273,13 +1272,13 @@ def create_input_tensor(
             azimuth_size
         )
         _seed(problem_id, rank, trial)
-        batch = max(1, M // 256)
+        batch = 32
         in_channels = 8
         out_channels = 8
         groups = 1
         kernel_size = 3
-        nlat_in = _round_up_multiple(max(8, min(M // 64, 32)), polar_size)
-        nlon_in = _round_up_multiple(max(8, min(N // 64, 32)), azimuth_size)
+        nlat_in = _round_up_multiple(128, polar_size)
+        nlon_in = _round_up_multiple(2 * nlat_in, azimuth_size)
         nlat_out = nlat_in
         nlon_out = nlon_in
 
@@ -1319,8 +1318,8 @@ def create_input_tensor(
     # 63: deepmd_kalman_filter_optimizer
     elif problem_id == 63:
         _seed(problem_id, rank, trial)
-        num_blocks = 4
-        block = max(8, min(M // 8, 64))
+        num_blocks = 8
+        block = 1024
         H = []
         weights = []
         P = []
@@ -1331,7 +1330,7 @@ def create_input_tensor(
             H.append(h)
             weights.append(w)
             P.append(p)
-        error = torch.randn((1, 1), dtype=torch.float64, device=dev)
+        error = torch.randn((), dtype=torch.float64, device=dev)
         kalman_lambda = 0.98
         kalman_nue = 0.9987
         return (H, error, weights, P, kalman_lambda, kalman_nue)
@@ -1339,21 +1338,17 @@ def create_input_tensor(
     # 64: gnn_neighbor_sampling
     elif problem_id == 64:
         _seed(problem_id, 0, trial)
-        num_nodes = _round_up_multiple(max(64, min(M, 1024)), world_size)
-        degree = 4
-        fanouts = [3, 2]
+        num_nodes = _round_up_multiple(max(10000, min(M, 100000)), world_size)
+        degree = 16
+        fanouts = [10, 5]
         node_to_rank = (torch.arange(num_nodes, device=dev, dtype=torch.long) % world_size).contiguous()
 
-        row_chunks = []
-        colptr = torch.empty((num_nodes + 1,), dtype=torch.long, device=dev)
-        colptr[0] = 0
-        for node_idx in range(num_nodes):
-            nbrs = (torch.arange(1, degree + 1, device=dev, dtype=torch.long) + node_idx) % num_nodes
-            row_chunks.append(nbrs)
-            colptr[node_idx + 1] = colptr[node_idx] + degree
-        row = torch.cat(row_chunks).contiguous()
+        colptr = (torch.arange(num_nodes + 1, device=dev, dtype=torch.long) * degree).contiguous()
+        node_ids = torch.arange(num_nodes, device=dev, dtype=torch.long).unsqueeze(1)
+        offsets = torch.arange(1, degree + 1, device=dev, dtype=torch.long).unsqueeze(0)
+        row = ((node_ids + offsets) % num_nodes).reshape(-1).contiguous()
 
-        seeds_per_rank = max(4, min(N // max(world_size * 16, 1), 32))
+        seeds_per_rank = max(512, min(N // max(world_size, 1), 2048))
         start = rank * seeds_per_rank
         seed_nodes = (torch.arange(seeds_per_rank, device=dev, dtype=torch.long) + start) % num_nodes
         return (seed_nodes.contiguous(), fanouts, colptr.contiguous(), row, node_to_rank, None, False)
@@ -1361,11 +1356,12 @@ def create_input_tensor(
     # 65: gnn_feature_exchange_all2all
     elif problem_id == 65:
         _seed(problem_id, rank, trial)
-        rows_per_peer = max(1, min(M // max(world_size * 64, 1), 8))
+        rows_per_peer = max(64, min(M // max(world_size, 1), 1024))
         hidden = max(8, min(N, 128))
-        seed_size = rows_per_peer * world_size
+        total_received = rows_per_peer * world_size
+        seed_size = max(1, total_received * 3 // 4)
         local_features = torch.randn((seed_size, hidden), dtype=dtype, device=dev)
-        seed_inverse_ids = torch.arange(seed_size, dtype=torch.long, device=dev)
+        seed_inverse_ids = torch.randint(0, seed_size, (total_received,), dtype=torch.long, device=dev)
         counts_sent = [rows_per_peer for _ in range(world_size)]
         counts_received = [rows_per_peer for _ in range(world_size)]
         return (local_features, seed_inverse_ids, counts_sent, counts_received, None)
@@ -1373,11 +1369,12 @@ def create_input_tensor(
     # 66: gnn_feature_exchange_all2all_backward
     elif problem_id == 66:
         _seed(problem_id, rank, trial)
-        rows_per_peer = max(1, min(M // max(world_size * 64, 1), 8))
+        rows_per_peer = max(64, min(M // max(world_size, 1), 1024))
         hidden = max(8, min(N, 128))
-        seed_size = rows_per_peer * world_size
-        grad_output = torch.randn((seed_size, hidden), dtype=torch.float32, device=dev)
-        seed_inverse_ids = torch.arange(seed_size, dtype=torch.long, device=dev)
+        total_received = rows_per_peer * world_size
+        seed_size = max(1, total_received // 2)
+        grad_output = torch.randn((total_received, hidden), dtype=torch.float32, device=dev)
+        seed_inverse_ids = torch.randint(0, seed_size, (total_received,), dtype=torch.long, device=dev)
         counts_sent = [rows_per_peer for _ in range(world_size)]
         counts_received = [rows_per_peer for _ in range(world_size)]
         return (grad_output, seed_inverse_ids, seed_size, counts_sent, counts_received, None)
@@ -1385,25 +1382,24 @@ def create_input_tensor(
     # 67: gnn_sparse_embedding_all2all
     elif problem_id == 67:
         _seed(problem_id, rank, trial)
-        num_nodes = _round_up_multiple(max(1024, M), world_size)
-        nnz = max(16, min(M // max(world_size, 1), 512))
+        num_nodes = _round_up_multiple(max(100000, M), world_size)
+        nnz = max(1024, min(M // max(world_size, 1), 50000))
         hidden = max(8, min(N, 128))
-        base = torch.arange(nnz, dtype=torch.long, device=dev)
-        idx = (base * world_size + rank + torch.randint(0, world_size, (nnz,), device=dev)) % num_nodes
+        idx = torch.randint(0, num_nodes, (nnz,), dtype=torch.long, device=dev)
         value = torch.randn((nnz, hidden), dtype=dtype, device=dev)
         return (idx.contiguous(), value.contiguous(), num_nodes, None)
 
     # 68: gnn_sparse_feature_fetch_projection
     elif problem_id == 68:
         _seed(problem_id, rank, trial)
-        num_total_nodes = _round_up_multiple(max(1024, M), world_size)
+        num_total_nodes = _round_up_multiple(max(111000000, M), world_size)
         shard_size = num_total_nodes // world_size
-        embed_dim = max(16, min(N, 128))
-        out_dim = max(8, embed_dim // 2)
+        embed_dim = 256 if N >= 256 else 128
+        out_dim = embed_dim
         local_embedding_shard = torch.randn((shard_size, embed_dim), dtype=dtype, device=dev)
         proj_matrix = torch.randn((embed_dim, out_dim), dtype=dtype, device=dev)
 
-        num_queries = max(16, min(M // max(world_size, 1), 512))
+        num_queries = max(20000, min(M // max(world_size, 1), 200000))
         base = torch.arange(num_queries, dtype=torch.long, device=dev)
         owner = (base + rank) % world_size
         local = (base * 7 + rank) % shard_size
@@ -1419,8 +1415,8 @@ def create_input_tensor(
     # 69: gnn_negative_scoring
     elif problem_id == 69:
         _seed(problem_id, rank, trial)
-        num_pos = max(8, min(M // max(world_size * 4, 1), 256)) + rank % 3
-        num_neg = max(4, min(N, 64))
+        num_pos = max(16, min(M // max(world_size, 1), 1280)) + rank % 3
+        num_neg = max(100, min(N, 1000))
         local_pos_scores = torch.randn((num_pos,), dtype=dtype, device=dev)
         local_neg_scores = torch.randn(
             (num_pos, num_neg), dtype=dtype, device=dev
@@ -1432,16 +1428,22 @@ def create_input_tensor(
         _seed(problem_id, rank, trial)
         key_splits = [1 + (dst % 3) for dst in range(world_size)]
         num_features = sum(key_splits)
-        batch_size = max(2, min(M // max(world_size * 64, 1), 16))
-        base = torch.arange(
-            num_features * batch_size, dtype=torch.long, device=dev
-        ).view(num_features, batch_size)
-        lengths_2d = ((base + rank) % 4).to(torch.long)
-        lengths = lengths_2d.reshape(-1).contiguous()
-        values = torch.arange(
-            int(lengths.sum().item()), dtype=torch.long, device=dev
+        batch_size = max(512, min(M // max(world_size, 1), 1024))
+        lengths_2d = torch.randint(
+            5,
+            21,
+            (num_features, batch_size),
+            dtype=torch.long,
+            device=dev,
         )
-        values = values + rank * max(1, values.numel())
+        lengths = lengths_2d.reshape(-1).contiguous()
+        values = torch.randint(
+            0,
+            1000000,
+            (int(lengths.sum().item()),),
+            dtype=torch.long,
+            device=dev,
+        )
         return (lengths, values.contiguous(), key_splits, batch_size, None)
 
     # 71: hyena_conv1d_boundary_exchange
