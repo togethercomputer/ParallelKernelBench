@@ -308,7 +308,7 @@ If you use ParallelKernelBench in your work, please cite:
 ```bibtex
 @misc{chan2026parallelkernelbench,
       title={ParallelKernelBench: Can LLMs Write Fast Multi-GPU Kernels?},
-      author={Willy Chan, Nathan Paek, Simon Guo, Simran Arora, Daniel Y. Fu},
+      author={Willy Chan and Nathan Paek and Simon Guo and Simran Arora and Daniel Fu},
       year={2026},
       howpublished={\url{https://github.com/Willy-Chan/ParallelKernelBench}},
       note={Benchmark and evaluation harness for multi-GPU kernel generation.},
