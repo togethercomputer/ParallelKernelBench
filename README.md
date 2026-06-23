@@ -7,9 +7,9 @@ ParallelKernelBench (PKB) is a benchmark with the goal of enabling LLMs to optim
 The design is heavily inspired by [KernelBench](https://github.com/ScalingIntelligence/KernelBench).
 
 <p align="center">
-  📄 <a href="https://arxiv.org/abs/TBD"><b>Paper</b></a> &nbsp;·&nbsp;
-  🤗 <a href="https://huggingface.co/datasets/TBD/ParallelKernelBench"><b>Hugging Face</b></a> &nbsp;·&nbsp;
-  🌐 <a href="https://TBD"><b>Project website</b></a>
+  📄 <a href="https://www.alphaxiv.org/abs/2606.parallel-kernel-bench"><b>Paper</b></a> &nbsp;·&nbsp;
+  🤗 <a href="https://huggingface.co/datasets/togethercomputer/ParallelKernelBench_Problems"><b>Hugging Face</b></a> &nbsp;·&nbsp;
+  🌐 <a href="http://www.together.ai/blog/parallelkernelbench"><b>Blog</b></a>
 </p>
 
 ---
