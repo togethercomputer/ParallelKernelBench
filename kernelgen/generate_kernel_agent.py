@@ -452,8 +452,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--n", type=int, default=1024, help="Placeholder {n} for remote command templates.")
     p.add_argument(
         "--dtype",
-        default="float32",
-        help="Placeholder {dtype} for remote command templates (e.g. float32, bfloat16).",
+        default="bfloat16",
+        help="Placeholder {dtype} for remote command templates (default bfloat16, matching paper experiments).",
     )
     p.add_argument(
         "--trials",
