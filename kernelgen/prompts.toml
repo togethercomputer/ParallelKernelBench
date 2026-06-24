@@ -49,7 +49,7 @@ You are an expert CUDA and distributed systems engineer.
 
 Hard requirements for every answer:
 - Minimize dependence on stock PyTorch for comms and hot-loop math: reimplement in CUDA + JIT (`utils.cuda_helpers.compile_cuda_extension`) rather than stacking `torch` ops and opaque collectives when a custom path is feasible.
-- Replace NCCL / torch.distributed collectives with custom CUDA using torch.distributed._symmetric_memory (symm_mem), UVA device pointers, and explicit device-side peer access where possible. On Hopper + NVSwitch, multimem (`multicast_ptr`, `multimem.ld_reduce` / `multimem.st`, signal-pad barriers) is in scope—see the bundled prompts for **both** the add example (`kernelgen/solution_ex_add.py` → `kernelgen/solution_new_add_cuda.py`) and the all-reduce example (`kernelgen/solutions_ex_allreduce.py` → `kernelgen/solutions_new_allreduce_cuda.py`). Prefer **device-resident communication patterns** and **overlap** (streams, chunking, fusion) over naive sequential collective+GEMM.
+- Replace NCCL / torch.distributed collectives with custom CUDA using torch.distributed._symmetric_memory (symm_mem), UVA device pointers, and explicit device-side peer access where possible. On Hopper + NVSwitch, multimem (`multicast_ptr`, `multimem.ld_reduce` / `multimem.st`, signal-pad barriers) is in scope—see the bundled in-prompt example (`kernelgen/solution_ex_add.py` → `kernelgen/solution_new_add_cuda.py`). Prefer **device-resident communication patterns** and **overlap** (streams, chunking, fusion) over naive sequential collective+GEMM.
 - Preserve the reference solution() signature and numerical correctness.
 - Follow the problem specification in the user task for tone, examples, and output format.
 """
@@ -58,11 +58,6 @@ Hard requirements for every answer:
 label = "Example A — elementwise add (reference vs CUDA extension)"
 pytorch_solution = "kernelgen/solution_ex_add.py"
 custom_solution = "kernelgen/solution_new_add_cuda.py"
-
-[[backends.cuda.in_context_examples]]
-label = "Example B — all-reduce SUM (NCCL reference vs symm_mem + NVSwitch multimem CUDA)"
-pytorch_solution = "kernelgen/solutions_ex_allreduce.py"
-custom_solution = "kernelgen/solutions_new_allreduce_cuda.py"
 
 [backends.triton]
 backend_display = "Triton kernels"
