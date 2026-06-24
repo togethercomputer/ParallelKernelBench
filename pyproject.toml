@@ -24,10 +24,6 @@ dependencies = [
   "triton",
 ]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = [".", "kernelgen"]
-
 [tool.uv]
 default-groups = []
 
