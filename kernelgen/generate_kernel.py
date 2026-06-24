@@ -529,7 +529,7 @@ def parse_args(argv: list[str] | None = None) -> KernelGenArgs:
         default="bf16",
         choices=_PRECISION_CHOICES,
         metavar="{" + "|".join(_PRECISION_CHOICES) + "}",
-        help="Floating-point precision: exact token only (default: fp32).",
+        help="Floating-point precision: exact token only (default: bf16).",
     )
     parser.add_argument(
         "--hardware",
