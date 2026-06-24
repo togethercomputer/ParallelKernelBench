@@ -195,7 +195,7 @@ python run_local.py \
   --solution cuda \
   --solutions-dir /path/to/custom/cuda/solution \
   --trials 5 \             # number of RNG trials (default 5)
-  --atol 1e-2 \            # tensor compare tolerances (default 1e-5 each)
+  --atol 1e-2 \            # tensor compare tolerances
   --rtol 1e-2 \
   --download \             # keep per-trial artifacts under logs/
   --measure-perf           # time reference and solution

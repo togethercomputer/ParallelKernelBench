@@ -24,10 +24,6 @@ dependencies = [
   "triton",
 ]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = [".", "kernelgen"]
-
 [tool.uv]
 default-groups = []
 
@@ -55,10 +51,7 @@ python_version = "3.12"
 cmd = "python3 run_together/worker.py --queue"
 copy = [
   "run_together/worker.py",
-  "scripts/",
-  "solutions_cuda/",
-  "solutions_parallelkittens/",
-  "solutions_triton/",
+  "scripts/",  # TODO: for together evaluation you might need to copy over the solutions folder!
   "reference/",
   "utils/",
 ]

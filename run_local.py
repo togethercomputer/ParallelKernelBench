@@ -17,12 +17,11 @@ Environment:
 
 Example Usage (--nproc-per-node / --num-gpus is required):
     python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution reference --download --measure-perf
-    python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution cuda --download --measure-perf --solutions-dir /home/simon/willyc/learning/ParallelKernelBench/solutions_cuda_bf16_h100_8_google_gemini-3-pro-preview
-    python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution parallelkittens --download --measure-perf --solutions-dir /home/simon/willyc/learning/ParallelKernelBench/solutions_parallelkittens_bf16_h100_8_google_gemini-3-pro-preview
-    python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution triton --download --measure-perf --solutions-dir /home/simon/willyc/learning/ParallelKernelBench/solutions_triton_bf16_h100_8_google_gemini-3-pro-preview
+    python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution cuda --download --measure-perf --solutions-dir /path/to/solutions_cuda
+    python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution parallelkittens --download --measure-perf --solutions-dir /path/to/solutions_parallelkittens
+    python run_local.py --nproc-per-node 4 --mode dryrun --problem 1 --solution triton --download --measure-perf --solutions-dir /path/to/solutions_triton
 
-    python run_local.py --nproc-per-node 4 --mode eval --problem 1 --solution reference --solutions-dir /home/simon/willyc/learning/ParallelKernelBench/reference
-    python run_local.py --nproc-per-node 4 --mode eval --problem 1 --solution cuda --solutions-dir /home/simon/willyc/learning/ParallelKernelBench/solutions_cuda_bf16_h100_8_google_gemini-3-pro-preview
+    python run_local.py --nproc-per-node 4 --mode eval --problem 1 --solution cuda --solutions-dir /path/to/solutions_cuda
     python run_local.py --nproc-per-node 4 --mode eval --problem 1 --solution parallelkittens --solutions-dir /path/to/kernels
     python run_local.py --nproc-per-node 4 --mode eval --problem 1 --solution triton --solutions-dir /path/to/kernels
 
