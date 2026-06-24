@@ -43,6 +43,11 @@ def solution(
     expert_mask: torch.Tensor,
     num_experts: int,
     group: Optional[dist.ProcessGroup] = None,
-) -> Tuple[List[int], List[int], torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     group = group or dist.group.WORLD
-    return _preprocess_impl(expert_mask=expert_mask, num_experts=num_experts, ep_group=group)
+    input_splits, output_splits, per_local_expert, sum_per_local_expert = _preprocess_impl(
+        expert_mask=expert_mask, num_experts=num_experts, ep_group=group
+    )
+    input_splits_t = torch.tensor(input_splits, dtype=torch.long)
+    output_splits_t = torch.tensor(output_splits, dtype=torch.long)
+    return (input_splits_t, output_splits_t, per_local_expert, sum_per_local_expert)

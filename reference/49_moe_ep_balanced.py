@@ -1,3 +1,10 @@
+# Expert-parallel (EP) fused MoE forward — BALANCED EP.
+#
+# Same kernel as problem 31 (router -> permute -> all_to_all dispatch -> per-expert
+# SiLU MLP -> all_to_all combine -> unpermute), but the harness sets
+# num_experts == world_size, i.e. exactly one expert per rank. With uniform routing
+# this gives the balanced all_to_all dispatch pattern (each rank sends/receives a
+# roughly equal token count).
 from typing import List, Optional, Tuple, Union
 
 import torch

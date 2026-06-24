@@ -1,3 +1,10 @@
+# Expert-parallel (EP) fused MoE forward — WIDE EP.
+#
+# Same kernel as problem 31 (router -> permute -> all_to_all dispatch -> per-expert
+# SiLU MLP -> all_to_all combine -> unpermute), but the harness sets
+# num_experts == world_size * 2, i.e. multiple experts hosted per rank. This stresses
+# the per-rank local expert loop and the larger, more fragmented all_to_all token
+# dispatch relative to the balanced case.
 from typing import List, Optional, Tuple, Union
 
 import torch

@@ -1,3 +1,9 @@
+# Expert-parallel (EP) fused MoE forward — BASE case.
+#
+# This is the generic fused MoE forward pass: router (softmax + top-k) -> token
+# permutation -> all_to_all dispatch -> per-expert SiLU MLP -> all_to_all combine ->
+# weighted unpermute. Here the expert count is fixed (num_experts = 8) regardless of
+# world size, so the EP load pattern depends on the launch configuration.
 from typing import List, Optional, Tuple, Union
 
 import torch

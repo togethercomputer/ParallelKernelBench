@@ -229,6 +229,39 @@ def _build_polar_azimuth_groups(azimuth_size: int):
     polar_rank = dist.get_rank(polar_group)
     return azimuth_group, polar_group, azimuth_rank, polar_rank, azimuth_size, polar_size
 
+def _build_ep_fsdp_groups(ep_size: int):
+    """
+    Build a 2D EP x EP-FSDP process grid for problem 22 (EP-aware grad clipping).
+    Rank layout: rank = ep_fsdp_idx * ep_size + ep_idx. The EP group reduces across
+    experts (contiguous blocks of ep_size); the EP-FSDP group reduces across the FSDP
+    replicas of each expert (strided). The two groups tile the world, so reducing an
+    EP grad term over both stages sums it across every rank exactly once.
+
+    Returns (ep_group, ep_fsdp_group). For a degenerate EP layout (ep_size <= 1 or it
+    does not divide world_size) the EP term is reduced over the whole world in a single
+    stage: (None, WORLD).
+    """
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+    if ep_size <= 1 or world_size % ep_size != 0:
+        return None, dist.group.WORLD
+
+    ep_fsdp_size = world_size // ep_size
+    ep_group = None
+    ep_fsdp_group = None
+    for blk in range(ep_fsdp_size):
+        ranks = list(range(blk * ep_size, (blk + 1) * ep_size))
+        g = dist.new_group(ranks=ranks)
+        if rank in ranks:
+            ep_group = g
+    for ep_idx in range(ep_size):
+        ranks = [ep_idx + blk * ep_size for blk in range(ep_fsdp_size)]
+        g = dist.new_group(ranks=ranks)
+        if rank in ranks:
+            ep_fsdp_group = g
+    assert ep_group is not None and ep_fsdp_group is not None
+    return ep_group, ep_fsdp_group
+
 def create_input_tensor(
     rank: int,
     world_size: int,
@@ -390,7 +423,7 @@ def create_input_tensor(
     elif problem_id == 21:
         _seed(problem_id, rank, trial)
         grad_tensors = [torch.randn(base_shape, dtype=dtype, device=dev) for _ in range(3)]
-        return (grad_tensors, 1.0, 2.0, None)
+        return (grad_tensors, 1.0, 2.0, dist.group.WORLD)
 
     # 22: clip_grad_norm_ep
     elif problem_id == 22:
@@ -398,7 +431,8 @@ def create_input_tensor(
         non_ep = [torch.randn(base_shape, dtype=dtype, device=dev)]
         ep_size = max(1, world_size // 2)
         ep = [torch.randn(base_shape, dtype=dtype, device=dev)]
-        return (non_ep, ep, 1.0, 2.0, ep_size, None, None, None)
+        ep_group, ep_fsdp_group = _build_ep_fsdp_groups(ep_size)
+        return (non_ep, ep, 1.0, 2.0, ep_size, dist.group.WORLD, ep_fsdp_group, ep_group)
 
     # 23: grad_acc_loss
     elif problem_id == 23:
