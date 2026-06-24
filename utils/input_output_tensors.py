@@ -892,38 +892,22 @@ def create_input_tensor(
         eps = 1e-5
         return (rs_input, gamma, eps)
 
-    # 46: fsdp_adamw_sharded
+    # 46: gemv_decode
     elif problem_id == 46:
         _seed(problem_id, 0, trial)
-        d_in, hidden, d_out = _ddp_mlp_shapes_divisible_by_dp(N, world_size)
-        total_numel = hidden * d_in + hidden + d_out * hidden + d_out
-        part = total_numel // world_size
+        num_tokens = max(1, min(8, M // 1024))
+        hidden = max(128, min(N, 4096))
+        vocab = _round_up_multiple(max(M, world_size * 1024), world_size)
+        local_vocab = vocab // world_size
 
-        full_param = torch.randn(total_numel, dtype=dtype, device=dev)
-        flat_param_shard = full_param[rank * part : (rank + 1) * part].contiguous()
-        full_grad = torch.randn(total_numel, dtype=dtype, device=dev)
-        flat_grad_shard = full_grad[rank * part : (rank + 1) * part].contiguous()
-        exp_avg_shard = torch.zeros(part, dtype=dtype, device=dev)
-        exp_avg_sq_shard = torch.zeros(part, dtype=dtype, device=dev)
+        hidden_states = torch.randn((num_tokens, hidden), dtype=dtype, device=dev)
+        full_weight = torch.randn((vocab, hidden), dtype=dtype, device=dev)
+        full_bias = torch.randn((vocab,), dtype=dtype, device=dev)
 
-        lr = 1e-3
-        beta1 = 0.9
-        beta2 = 0.999
-        eps = 1e-8
-        weight_decay = 0.01
-        adam_step = 1 + (trial % 7)
-        return (
-            flat_param_shard,
-            flat_grad_shard,
-            exp_avg_shard,
-            exp_avg_sq_shard,
-            lr,
-            beta1,
-            beta2,
-            eps,
-            weight_decay,
-            adam_step,
-        )
+        sl = slice(rank * local_vocab, (rank + 1) * local_vocab)
+        weight_shard = full_weight[sl].contiguous()
+        bias_shard = full_bias[sl].contiguous()
+        return (hidden_states, weight_shard, bias_shard)
 
     # 47: fsdp_step_e2e
     elif problem_id == 47:
