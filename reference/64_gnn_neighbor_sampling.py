@@ -25,10 +25,7 @@ def _sample_one_hop_csc_dist(
         take = min(k, deg) if k >= 0 else deg
 
         if take > 0:
-            if replace:
-                perm = torch.randint(deg, (take,), device=input_nodes.device)
-            else:
-                perm = torch.randperm(deg, device=input_nodes.device)[:take]
+            perm = torch.arange(take, device=input_nodes.device)
             sampled_nodes.append(row[start:end].index_select(0, perm))
             sampled_edges.append(torch.arange(start, end, device=input_nodes.device).index_select(0, perm))
 

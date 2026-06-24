@@ -1,7 +1,7 @@
 [meta]
 version = "1.0"
 default_backend = "cuda"
-default_precision = "fp32"
+default_precision = "bf16"
 
 # Fallback mini-swe-agent system prompt when a [backends.*] row omits agent_system_prompt
 [agent_kernel]

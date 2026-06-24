@@ -13,7 +13,7 @@ Usage:
 
     # Inspect tensors from one backend folder
     python utils/compare_outputs.py --problem 1 --inspect reference
-    python utils/compare_outputs.py -p 1 -i cuda --atol 1e-3
+    python utils/compare_outputs.py -p 1 -i cuda --atol 1e-2
 """
 
 from __future__ import annotations
@@ -363,8 +363,8 @@ def main():
         default=None,
         help="Inspect mode: print tensors from one backend folder (e.g. reference, cuda, triton)",
     )
-    parser.add_argument("--atol", type=float, default=1e-5, help="Absolute tolerance for comparison")
-    parser.add_argument("--rtol", type=float, default=1e-5, help="Relative tolerance for comparison")
+    parser.add_argument("--atol", type=float, default=1e-2, help="Absolute tolerance for comparison")
+    parser.add_argument("--rtol", type=float, default=1e-2, help="Relative tolerance for comparison")
     parser.add_argument(
         "--logs-dir",
         type=str,

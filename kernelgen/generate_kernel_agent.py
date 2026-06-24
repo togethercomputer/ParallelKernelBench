@@ -391,7 +391,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="prompts.toml [backends.*] key and output folder (cuda, triton, ...).",
     )
-    p.add_argument("--precision", default="fp32", choices=_PRECISION_CHOICES)
+    p.add_argument("--precision", default="bf16", choices=_PRECISION_CHOICES)
     p.add_argument("--hardware", default=None, choices=_HARDWARE_CHOICES)
     p.add_argument(
         "--prompts",
