@@ -2,5 +2,10 @@
 cost_modeling/
 reference_rooflines_code/
 
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
 # macOS
 .DS_Store
