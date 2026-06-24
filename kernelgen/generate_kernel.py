@@ -526,7 +526,7 @@ def parse_args(argv: list[str] | None = None) -> KernelGenArgs:
     )
     parser.add_argument(
         "--precision",
-        default="fp32",
+        default="bf16",
         choices=_PRECISION_CHOICES,
         metavar="{" + "|".join(_PRECISION_CHOICES) + "}",
         help="Floating-point precision: exact token only (default: fp32).",
