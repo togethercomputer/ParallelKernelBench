@@ -10,7 +10,7 @@ Payload schema:
         "solution_type": "triton",      # "reference" | "triton" | "cuda" | "parallelkittens"
         "m":             1024,           # rows  (default 1024)
         "n":             1024,           # cols  (default 1024)
-        "dtype":         "float32",      # float32 | float16 | bfloat16 | float64
+        "dtype":         "bfloat16",     # float32 | float16 | bfloat16 | float64
         "measure_perf":  true,           # optional: run perf measurement (default false)
         "measure_warmup_iters": 500,     # optional: warmup before timed region (default 500)
         "measure_profiling_iters": 100,  # optional: timed iters in one CUDA event pair (default 100)
@@ -263,7 +263,7 @@ class PKBWorker(sprocket.Sprocket):
         solution_type = str(args.get("solution_type", "reference"))
         m = int(args.get("m", 1024))
         n = int(args.get("n", 1024))
-        dtype = str(args.get("dtype", "float32"))
+        dtype = str(args.get("dtype", "bfloat16"))
         measure_perf = bool(args.get("measure_perf", False))
         measure_warmup_iters = int(args.get("measure_warmup_iters", 500))
         measure_profiling_iters = int(args.get("measure_profiling_iters", 100))

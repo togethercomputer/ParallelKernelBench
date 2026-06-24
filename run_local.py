@@ -517,7 +517,7 @@ def main() -> None:
     # (2) Input Tensor Properties
     parser.add_argument("--m", type=int, default=1024, help="Custom Tensor Size Specified #1 (e.g. Rows). This is used for simplifying tensor sweeps.")
     parser.add_argument("--n", type=int, default=1024, help="Custom Tensor Size Specified #2 (e.g. Cols). This is used for simplifying tensor sweeps.")
-    parser.add_argument("--dtype", default="float32", help="Tensor dtype")
+    parser.add_argument("--dtype", default="bfloat16", help="Tensor dtype (default bfloat16, matching paper experiments)")
 
     # (3) Correctness Evaluation Configuration
     parser.add_argument("--download", action="store_true", help="Write Tensor outputs under logs/problem_<stem>/{reference|<solution>}/ (default: do not download).")

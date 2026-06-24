@@ -11,10 +11,12 @@ Benchmarking convention:
 
 - ``warmup_iters`` default 500 for power-steady state; ``measure_iters`` default 100.
 
-- Timing: two CUDA events — one recorded immediately before and one after all profiling iterations,
-  with kernels launched back-to-back (no per-iteration synchronization).
+- Timing: ``measure_iters + 1`` CUDA events — one before the first iter and one after each iter.
+  Events are async stream markers, so kernels still launch back-to-back with no per-iteration host
+  synchronization; a single sync at the end lets us read the intervals between consecutive events.
 
-- Per-iteration mean time is ``elapsed / measure_iters``.
+- ``wall_time_ms`` is the mean per-iteration time; ``wall_time_std_ms`` / ``min_time_ms`` /
+  ``max_time_ms`` are the real dispersion over the ``measure_iters`` per-iteration samples.
 """
 
 import torch
@@ -55,7 +57,8 @@ def measure_solution_performance(
     measure_iters: int = 100,
 ) -> Dict[str, Any]:
     """
-    Time ``solution_fn`` using the module docstring convention (input groups + one CUDA event pair).
+    Time ``solution_fn`` using the module docstring convention (input groups + per-iteration
+    CUDA events), returning the mean plus real std / min / max over the per-iteration samples.
     """
     if not isinstance(tensor, torch.Tensor):
         raise TypeError(
@@ -72,22 +75,35 @@ def measure_solution_performance(
         _ = solution_fn(input_groups[i % num_input_groups])
     torch.cuda.synchronize()
 
-    start_ev = torch.cuda.Event(enable_timing=True)
-    end_ev = torch.cuda.Event(enable_timing=True)
-    start_ev.record()
+    # One event before the first iter plus one after every iter. Events are async stream
+    # markers, so kernels still launch back-to-back with no host sync inside the loop; the
+    # intervals between consecutive events give real per-iteration samples after one sync.
+    events = [torch.cuda.Event(enable_timing=True) for _ in range(measure_iters + 1)]
+    events[0].record()
     for i in range(measure_iters):
         _ = solution_fn(input_groups[i % num_input_groups])
-    end_ev.record()
+        events[i + 1].record()
     torch.cuda.synchronize()
 
-    total_ms = float(start_ev.elapsed_time(end_ev))
+    per_iter_ms = [
+        float(events[i].elapsed_time(events[i + 1])) for i in range(measure_iters)
+    ]
+    total_ms = float(events[0].elapsed_time(events[measure_iters]))
     avg_time_ms = total_ms / float(measure_iters)
+
+    n = len(per_iter_ms)
+    if n > 1:
+        variance = sum((t - avg_time_ms) ** 2 for t in per_iter_ms) / (n - 1)
+        std_time_ms = variance ** 0.5
+    else:
+        std_time_ms = 0.0
+
     return {
         "wall_time_ms": avg_time_ms,
         "wall_time_total_ms": total_ms,
-        "wall_time_std_ms": 0.0,
-        "min_time_ms": avg_time_ms,
-        "max_time_ms": avg_time_ms,
+        "wall_time_std_ms": std_time_ms,
+        "min_time_ms": min(per_iter_ms) if per_iter_ms else avg_time_ms,
+        "max_time_ms": max(per_iter_ms) if per_iter_ms else avg_time_ms,
         "iterations": measure_iters,
         "warmup_iterations": warmup_iters,
         "num_input_groups": float(num_input_groups),

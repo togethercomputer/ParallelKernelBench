@@ -481,7 +481,7 @@ def main() -> None:
     parser.add_argument("--solution", "-s", default="reference", help="Backend: reference, triton, cuda, parallelkittens")
     parser.add_argument("--m", type=int, default=1024, help="Rows")
     parser.add_argument("--n", type=int, default=1024, help="Cols")
-    parser.add_argument("--dtype", default="float32", help="Tensor dtype")
+    parser.add_argument("--dtype", default="bfloat16", help="Tensor dtype (default bfloat16, matching paper experiments)")
     parser.add_argument(
         "--download",
         action="store_true",

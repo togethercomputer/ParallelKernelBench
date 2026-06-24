@@ -245,7 +245,7 @@ def main():
     parser.add_argument("--world_size", type=int, default=None, help="Number of GPUs (reference only, when not using torchrun)")
     parser.add_argument("--rows", type=int, default=1024, help="Tensor rows")
     parser.add_argument("--cols", type=int, default=1024, help="Tensor cols")
-    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16", "float64"])
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16", "float64"])
     parser.add_argument("--problem_id", type=int, default=1, help="Problem ID (affects input tensor shape)")
     parser.add_argument("--measure_perf", action="store_true", help="Run warmup+timed iterations and save perf JSON alongside .pt files")
     parser.add_argument(
