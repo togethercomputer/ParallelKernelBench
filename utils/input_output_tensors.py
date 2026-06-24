@@ -7,8 +7,6 @@ consistent tensor creation and saving behavior.
 
 import os
 import json
-import copy
-import importlib.util
 import math
 
 import torch
@@ -53,7 +51,6 @@ def save_tensor(output, logs_dir: str, rank: int) -> str:
 # but may include Python scalars / dicts / dataclasses (e.g. problem 4, problems 100–105).
 #   - solution(tensor) for single-tensor problems: x is (tensor,)
 #   - solution(t1, t2) for multi-arg problems: x is (t1, t2, ...)
-# Problems 100–105: solution(rank, world_size, cfg, input_ids).
 # Output from solution_fn may still be a single tensor or a tuple; save_tensor() handles both.
 # ---------------------------------------------------------------------------
 
@@ -62,7 +59,6 @@ def _seed(problem_id: int, rank: int, trial: int = 0) -> None:
     torch.manual_seed(42 + problem_id * 1000 + rank + trial * 1_000_003)
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_REF_MODULES_CACHE: dict[int, object] = {}
 
 def _round_up_multiple(n: int, m: int) -> int:
     return ((n + m - 1) // m) * m
@@ -97,50 +93,6 @@ def _moe_narrow_num_experts(world_size: int) -> int:
 
 def _linear(in_features: int, out_features: int, dtype: torch.dtype, device) -> torch.nn.Linear:
     return torch.nn.Linear(in_features, out_features).to(device=device, dtype=dtype)
-
-def _load_reference_module(problem_id: int):
-    if problem_id in _REF_MODULES_CACHE:
-        return _REF_MODULES_CACHE[problem_id]
-    stem = {
-        100: "100_deepseek_v3_671b_tp_attn_ep_moe",
-        101: "101_gemma3_27b_tp_attn_tp_mlp",
-        102: "102_llama32_3b_tp_attn_tp_mlp",
-        103: "103_olmo_3_32b_tp_attn_tp_mlp",
-        104: "104_qwen3_235b_tp_attn_ep_moe",
-        105: "105_qwen3_code_flash_30b_tp_attn_ep_moe",
-        106: "106_deepseek_v3_671b_cp_ulysses_attn_ep_moe",
-        107: "107_gemma3_27b_cp_ulysses_attn_tp_mlp",
-        108: "108_llama32_3b_cp_ulysses_attn_tp_mlp",
-        109: "109_olmo_3_32b_cp_ulysses_attn_tp_mlp",
-        110: "110_qwen3_235b_cp_ulysses_attn_ep_moe",
-        111: "111_qwen3_code_flash_30b_cp_ulysses_attn_ep_moe",
-    }[problem_id]
-    path = os.path.join(_PROJECT_ROOT, "reference", f"{stem}.py")
-    spec = importlib.util.spec_from_file_location(f"ref_{stem}", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    _REF_MODULES_CACHE[problem_id] = mod
-    return mod
-
-def _align_model_args_100(cfg, world_size: int) -> None:
-    """ModelArgs for reference/100: TP/EP divisibility constraints."""
-    cfg.n_layers = 2
-    for attr in ("dim", "inter_dim", "moe_inter_dim"):
-        v = getattr(cfg, attr)
-        if v % world_size:
-            setattr(cfg, attr, _round_up_multiple(v, world_size))
-    if cfg.vocab_size % world_size:
-        cfg.vocab_size = _round_up_multiple(cfg.vocab_size, world_size)
-    if cfg.n_heads % world_size:
-        cfg.n_heads = _round_up_multiple(cfg.n_heads, world_size)
-    if cfg.n_routed_experts % world_size:
-        cfg.n_routed_experts = _round_up_multiple(cfg.n_routed_experts, world_size)
-    shared = cfg.n_shared_experts * cfg.moe_inter_dim
-    guard = 0
-    while shared % world_size and guard < 4096:
-        cfg.moe_inter_dim += 1
-        shared = cfg.n_shared_experts * cfg.moe_inter_dim
-        guard += 1
 
 def _common_attn_dims(base_shape, world_size):
     """Shared (B, T, num_heads, head_dim) from base_shape (M, N)."""
@@ -295,7 +247,7 @@ def create_input_tensor(
     Args:
         rank: Process rank (0..world_size-1)
         world_size: Total number of processes
-        problem_id: Problem ID (e.g. 1–105) from reference filename
+        problem_id: Problem ID (e.g. 1–87) from reference filename
         base_shape: Base tensor shape tuple (e.g., (M, N))
         dtype: Tensor data type
         trial: Non-negative index; changes RNG for problems that use random inputs (trial=0 is legacy behavior).

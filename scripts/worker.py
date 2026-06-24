@@ -70,17 +70,36 @@ def _perf_run_fn_and_first_tensor(
             input_tensor = a
             first_tensor_idx = i
             break
-    if input_tensor is None or first_tensor_idx is None:
-        raise RuntimeError(
-            "create_input_tensor returned no torch.Tensor; cannot run --measure_perf"
-        )
 
-    def run_fn(t: torch.Tensor):
-        args = list(x)
-        args[first_tensor_idx] = t
-        return solution_fn(*args)
+    if input_tensor is not None and first_tensor_idx is not None:
+        def run_fn(t: torch.Tensor):
+            args = list(x)
+            args[first_tensor_idx] = t
+            return solution_fn(*args)
 
-    return input_tensor, run_fn
+        return input_tensor, run_fn
+
+    # Some problems lead with a list/tuple of tensors (e.g. problem 21/22 pass a list of grad
+    # tensors first). Look one level into top-level list/tuple args and time the first tensor found there, substituting it in place.
+    for i, a in enumerate(x):
+        if isinstance(a, (list, tuple)):
+            for j, b in enumerate(a):
+                if isinstance(b, torch.Tensor):
+                    nested_i, nested_j = i, j
+                    nested_tensor = b
+
+                    def run_fn(t: torch.Tensor):
+                        args = list(x)
+                        container = list(args[nested_i])
+                        container[nested_j] = t
+                        args[nested_i] = type(x[nested_i])(container)  # keep list/tuple type
+                        return solution_fn(*args)
+
+                    return nested_tensor, run_fn
+
+    raise RuntimeError(
+        "create_input_tensor returned no torch.Tensor; cannot run --measure_perf"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +239,7 @@ def run_worker(
 
 def main():
     parser = argparse.ArgumentParser(description="Unified distributed worker for kernel evaluation")
-    parser.add_argument("--backend", type=str, required=True, choices=BACKENDS, help="Backend: reference or triton")
+    parser.add_argument("--backend", type=str, required=True, choices=BACKENDS, help="Backend: reference, triton, cuda, or parallelkittens")
     parser.add_argument("--problem_py", type=str, required=True, help="Path to solution .py file")
     parser.add_argument("--logs_dir", type=str, required=True, help="Directory to save output tensors")
     parser.add_argument("--world_size", type=int, default=None, help="Number of GPUs (reference only, when not using torchrun)")
