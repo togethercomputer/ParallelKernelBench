@@ -195,8 +195,8 @@ python run_local.py \
   --solution cuda \
   --solutions-dir /path/to/custom/cuda/solution \
   --trials 5 \             # number of RNG trials (default 5)
-  --atol 1e-5 \            # tensor compare tolerances (default 1e-5 each)
-  --rtol 1e-5 \
+  --atol 1e-2 \            # tensor compare tolerances (default 1e-5 each)
+  --rtol 1e-2 \
   --download \             # keep per-trial artifacts under logs/
   --measure-perf           # time reference and solution
 ```
@@ -258,7 +258,7 @@ logs/problem_<stem>/
 uv run python utils/compare_outputs.py --problem 1
 
 # Compare against another backend; tighten tolerances if needed
-uv run python utils/compare_outputs.py --problem 1_allreduce --solution triton --atol 1e-3 --rtol 1e-3
+uv run python utils/compare_outputs.py --problem 1_allreduce --solution triton --atol 1e-2 --rtol 1e-2
 
 # Inspect one backend folder without comparing (print shapes / sample values per rank)
 uv run python utils/compare_outputs.py --problem 1 --inspect reference

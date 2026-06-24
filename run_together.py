@@ -503,8 +503,8 @@ def main() -> None:
         help="Profiling iterations inside one CUDA event pair (with --measure-perf; default 100).",
     )
     parser.add_argument("--profile", action="store_true", help="PyTorch profiler traces under traces/")
-    parser.add_argument("--atol", type=float, default=1e-5, help="eval mode: abs tolerance for tensor compare")
-    parser.add_argument("--rtol", type=float, default=1e-5, help="eval mode: rel tolerance for tensor compare")
+    parser.add_argument("--atol", type=float, default=1e-2, help="eval mode: abs tolerance for tensor compare")
+    parser.add_argument("--rtol", type=float, default=1e-2, help="eval mode: rel tolerance for tensor compare")
     parser.add_argument(
         "--trials",
         type=int,

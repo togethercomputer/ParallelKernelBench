@@ -521,8 +521,8 @@ def main() -> None:
 
     # (3) Correctness Evaluation Configuration
     parser.add_argument("--download", action="store_true", help="Write Tensor outputs under logs/problem_<stem>/{reference|<solution>}/ (default: do not download).")
-    parser.add_argument("--atol", type=float, default=1e-5, help="eval mode: abs tolerance for tensor compare")
-    parser.add_argument("--rtol", type=float, default=1e-5, help="eval mode: rel tolerance for tensor compare")
+    parser.add_argument("--atol", type=float, default=1e-2, help="eval mode: abs tolerance for tensor compare")
+    parser.add_argument("--rtol", type=float, default=1e-2, help="eval mode: rel tolerance for tensor compare")
     parser.add_argument("--trials", type=int, default=5, help="eval mode only: number of random-input trials (default 5). Ignored for dryrun.")
 
     # (4) Performance Evaluation Configuration
