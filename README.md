@@ -54,7 +54,6 @@ uv sync
 
 # Verify the environment
 uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-uv run pytest tests/ -q
 ```
 
 This creates `.venv/` at the repo root and installs all dependencies from the pinned `uv.lock` (commit that file when you change `pyproject.toml`).
@@ -129,9 +128,9 @@ python kernelgen/generate_kernel_agent.py \
   --step-limit 3 \
   --timeout 600 \
   --remote-dryrun-command \
-    'python run_local.py --num-procs-per-node 4 --mode dryrun --problem {problem_arg} --solution {backend} --measure-perf' \
+    'python run_local.py --nproc-per-node 4 --mode dryrun --problem {problem_arg} --solution {backend} --measure-perf' \
   --remote-eval-command \
-    'python run_local.py --num-procs-per-node 4 --mode eval --problem {problem_arg} --solution {backend} --measure-perf'
+    'python run_local.py --nproc-per-node 4 --mode eval --problem {problem_arg} --solution {backend} --measure-perf'
 ```
 
 ### Generate multiple or all solutions
@@ -295,7 +294,7 @@ This started as an internship project: we would greatly welcome contributions!
 
 ### Adding a problem
 
-1. Fix tensor shapes and allocation in `utils/input_tensors.py` (shared across backends).
+1. Fix tensor shapes and allocation in `utils/input_output_tensors.py` (shared across backends).
 2. Define performance rules in `utils/performance.py` if needed.
 3. Add the reference under `reference/` and optional solutions under the appropriate `solutions_`* tree.
 

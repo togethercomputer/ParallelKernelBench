@@ -220,7 +220,7 @@ def run_worker(
 
 def main():
     parser = argparse.ArgumentParser(description="Unified distributed worker for kernel evaluation")
-    parser.add_argument("--backend", type=str, required=True, choices=BACKENDS, help="Backend: reference or triton")
+    parser.add_argument("--backend", type=str, required=True, choices=BACKENDS, help="Backend: reference, triton, cuda, or parallelkittens")
     parser.add_argument("--problem_py", type=str, required=True, help="Path to solution .py file")
     parser.add_argument("--logs_dir", type=str, required=True, help="Directory to save output tensors")
     parser.add_argument("--world_size", type=int, default=None, help="Number of GPUs (reference only, when not using torchrun)")

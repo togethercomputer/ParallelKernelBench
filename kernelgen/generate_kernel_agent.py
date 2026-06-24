@@ -25,9 +25,9 @@ python kernelgen/generate_kernel_agent.py \
   --step-limit 3 \
   --timeout 600 \
   --remote-dryrun-command \
-    'python run_local.py --num-procs-per-node 4 --mode dryrun --problem {problem_arg} --solution {backend} --measure-perf' \
+    'python run_local.py --nproc-per-node 4 --mode dryrun --problem {problem_arg} --solution {backend} --measure-perf' \
   --remote-eval-command \
-    'python run_local.py --num-procs-per-node 4 --mode eval --problem {problem_arg} --solution {backend} --measure-perf'
+    'python run_local.py --nproc-per-node 4 --mode eval --problem {problem_arg} --solution {backend} --measure-perf'
 """
 
 from __future__ import annotations
