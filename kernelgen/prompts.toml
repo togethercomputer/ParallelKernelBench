@@ -72,9 +72,9 @@ Hard requirements:
 """
 
 [[backends.triton.in_context_examples]]
-label = "Example A — elementwise add (reference vs custom extension)"
+label = "Example A — elementwise add (reference vs Triton + symmetric memory UVA)"
 pytorch_solution = "kernelgen/solution_ex_add.py"
-custom_solution = "kernelgen/solution_new_add_cuda.py"
+custom_solution = "kernelgen/solutions_new_add_triton.py"
 
 [backends.parallelkittens]
 backend_display = "ParallelKittens / ThunderKittens CUDA integrations"

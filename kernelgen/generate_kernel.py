@@ -55,11 +55,11 @@ Provider = Literal["google", "together", "anthropic", "openai"]
 
 # Curated allowlist: --model must be a key. Value is the API backend.
 ALLOWED_MODELS: dict[str, Provider] = {
-    "gemini-3-flash-preview": "google",    # evaluated
+    "gemini-3-flash-preview": "google",
     "gemini-3-pro-preview": "google",
     "zai-org/GLM-5.1": "together",
     "deepseek-ai/DeepSeek-V4-Pro": "together",
-    "Qwen/Qwen3-Coder-Next-FP8": "together",   # evaluated
+    "Qwen/Qwen3-Coder-Next-FP8": "together",
     "claude-sonnet-4-20250514": "anthropic",
     "claude-opus-4-20250514": "anthropic",
     "gpt-4.1": "openai",
