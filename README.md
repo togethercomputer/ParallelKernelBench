@@ -314,4 +314,4 @@ If you use ParallelKernelBench in your work, please cite:
 }
 ```
 
-Special thanks to Stuart Sul, William Hu, Austin Silveria, Hayden Prairie, Jonah Yi for their invaluable assistance and feedback! And of course, thank you to Together AI for sponsoring the compute for this project.
+Special thanks to Stuart Sul, William Hu, Austin Silveria, Hayden Prairie, Jonah Yi,Sokserey Sun, Omar Abul-Hassan, Vincent Yip, Kyle Roh for their invaluable assistance and paper feedback! And of course, thank you to Together AI for sponsoring the compute for this project.
