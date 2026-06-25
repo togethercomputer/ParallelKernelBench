@@ -57,7 +57,7 @@ Provider = Literal["google", "together", "anthropic", "openai"]
 ALLOWED_MODELS: dict[str, Provider] = {
     "gemini-3-flash-preview": "google",
     "gemini-3-pro-preview": "google",
-    "zai-org/GLM-5.1": "together",
+    "zai-org/GLM-5.2": "together",
     "deepseek-ai/DeepSeek-V4-Pro": "together",
     "Qwen/Qwen3-Coder-Next-FP8": "together",
     "claude-sonnet-4-20250514": "anthropic",
@@ -67,7 +67,7 @@ ALLOWED_MODELS: dict[str, Provider] = {
     "o3": "openai",
 }
 
-_DEFAULT_MODEL = "gemini-2.5-flash"
+_DEFAULT_MODEL = "zai-org/GLM-5.2"
 
 # Chat providers apply a server default max output length when ``max_tokens`` is omitted.
 # Long CUDA/TK sources then stop mid-file (finish_reason=length).
@@ -76,7 +76,7 @@ _CHAT_DEFAULT_TIMEOUT_SEC = 3600.0
 
 # System instruction for the model; task text is the assembled user prompt from TOML.
 # Default system instruction for --backend cuda (and any backend without generate_kernel_system_prompt).
-SYSTEM_PROMPT = """You are an expert CUDA and distributed systems engineer.
+SYSTEM_PROMPT = """You are an expert NVIDIA kernel and distributed systems engineer.
 
 Hard requirements for every answer:
 - Replace NCCL / torch.distributed collectives with custom CUDA using torch.distributed._symmetric_memory (symm_mem), UVA device pointers, and utils.cuda_helpers.compile_cuda_extension for JIT compilation.
