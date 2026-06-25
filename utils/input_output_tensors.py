@@ -400,8 +400,10 @@ def create_input_tensor(
     # 18: rms_norm
     elif problem_id == 18:
         _seed(problem_id, rank, trial)
-        hidden = torch.randn(base_shape, dtype=dtype, device=dev)
-        weight = torch.randn((N,), dtype=dtype, device=dev)
+        hidden_dim = _round_up_multiple(N, world_size)
+        local_hidden_dim = hidden_dim // world_size
+        hidden = torch.randn((M, local_hidden_dim), dtype=dtype, device=dev)
+        weight = torch.randn((local_hidden_dim,), dtype=dtype, device=dev)
         return (hidden, weight, 1e-5)
 
     # 19: blocked_fp8_quantize
