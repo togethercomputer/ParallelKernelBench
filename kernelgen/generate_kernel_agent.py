@@ -10,12 +10,8 @@ Simple mental model:
 
 The generated file is saved to ``solutions_<backend>/<problem_stem>_<backend>.py``.
 
-IMPORTANT NOTE: To use this script, you must get the mini-swe-agent github projects into the kernelgen directory:
-```
-pip install -e kernelgen/mini-swe-agent
-cd kernelgen
-git clone https://github.com/SWE-agent/mini-swe-agent.git
-```
+NOTE: mini-swe-agent is installed automatically as a ``uv`` git dependency
+(``uv sync``), so no separate installation is required.
 
 Example usage:
 python kernelgen/generate_kernel_agent.py \
@@ -47,12 +43,10 @@ import toml
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _KERNELGEN_DIR = Path(__file__).resolve().parent
-_MINI_SRC = _KERNELGEN_DIR / "mini-swe-agent" / "src"
 
-for _p in (_PROJECT_ROOT, _MINI_SRC):
-    _s = str(_p)
-    if _s not in sys.path:
-        sys.path.insert(0, _s)
+_s = str(_PROJECT_ROOT)
+if _s not in sys.path:
+    sys.path.insert(0, _s)
 
 from utils.problem_id import resolve_problem
 
@@ -66,7 +60,8 @@ from generate_kernel import (
 # Paths and constants
 ################################################################################################
 
-_MINI_CONFIG = _MINI_SRC / "minisweagent" / "config" / "mini.yaml"
+# mini.yaml ships inside the installed minisweagent package; resolved lazily in main()
+# (see _mini_config_path) so a missing install surfaces a friendly ImportError instead.
 _PRECISION_CHOICES = ("fp32", "fp16", "bf16")
 _HARDWARE_CHOICES = ("h100_8", "b200_72")
 
@@ -545,6 +540,7 @@ def run_agent(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     _require_together_key_if_needed(args.model)
 
     try:
+        import minisweagent
         from minisweagent.config import get_config_from_spec
         from minisweagent.models import get_model
         from minisweagent.environments import get_environment
@@ -553,13 +549,14 @@ def run_agent(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     except ImportError as e:
         print(
             "Error: mini-swe-agent dependencies missing. From repo root run:\n"
-            "  pip install -e kernelgen/mini-swe-agent\n"
+            "  uv sync\n"
             f"Import detail: {e}",
             file=sys.stderr,
         )
         return 1
 
-    mini_cfg = get_config_from_spec(_MINI_CONFIG)
+    mini_config = Path(minisweagent.__file__).parent / "config" / "mini.yaml"
+    mini_cfg = get_config_from_spec(mini_config)
     agent_cfg = _build_agent_section(
         mini_cfg.get("agent", {}),
         cfg,

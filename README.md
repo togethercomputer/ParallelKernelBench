@@ -46,10 +46,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 cd ParallelKernelBench
 
-cd kernelgen
-git clone https://github.com/SWE-agent/mini-swe-agent.git
-cd ..
-
 uv sync
 
 # Verify the environment
@@ -110,13 +106,7 @@ uv run python kernelgen/generate_kernel.py --paths-to-prompts-template /path/to/
 
 We provide a script (`[kernelgen/generate_kernel_agent.py](kernelgen/generate_kernel_agent.py)`) that uses mini-swe-agent in generating a kernel. Note that we verified functionality on Google models.
 
-To use this script, you must install mini-swe-agent separately:
-
-```bash
-pip install -e kernelgen/mini-swe-agent
-cd kernelgen
-git clone https://github.com/SWE-agent/mini-swe-agent.git
-```
+mini-swe-agent is installed automatically as a `uv` git dependency, so no separate installation is required.
 
 An example command:
 
