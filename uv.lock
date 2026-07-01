@@ -493,37 +493,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas-cu12" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime-cu12" },
 ]
 cufft = [
-    { name = "nvidia-cufft-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft-cu12" },
 ]
 cufile = [
-    { name = "nvidia-cufile-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile-cu12" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti-cu12" },
 ]
 curand = [
-    { name = "nvidia-curand-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand-cu12" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver-cu12" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse-cu12" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc-cu12" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx-cu12" },
 ]
 
 [[package]]
@@ -600,6 +600,53 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
+name = "dulaj-pkb-cuda"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "cffi" },
+    { name = "cuda-core" },
+    { name = "cuda-pathfinder" },
+    { name = "google-generativeai" },
+    { name = "mini-swe-agent" },
+    { name = "modal" },
+    { name = "mpi4py" },
+    { name = "ninja" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "pytest" },
+    { name = "requests" },
+    { name = "sprocket" },
+    { name = "together" },
+    { name = "toml" },
+    { name = "torch" },
+    { name = "triton" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.49" },
+    { name = "cffi" },
+    { name = "cuda-core", specifier = ">=0.4" },
+    { name = "cuda-pathfinder", specifier = ">=1.2.3" },
+    { name = "google-generativeai", specifier = ">=0.8" },
+    { name = "mini-swe-agent", git = "https://github.com/SWE-agent/mini-swe-agent.git" },
+    { name = "modal", specifier = ">=1.0" },
+    { name = "mpi4py" },
+    { name = "ninja" },
+    { name = "numpy" },
+    { name = "openai", specifier = ">=1.0" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "requests", specifier = ">=2.28" },
+    { name = "sprocket", index = "https://pypi.together.ai/" },
+    { name = "together", specifier = ">=1.0" },
+    { name = "toml", specifier = ">=0.10" },
+    { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "triton", index = "https://download.pytorch.org/whl/cu128" },
 ]
 
 [[package]]
@@ -1343,7 +1390,8 @@ wheels = [
 
 [[package]]
 name = "mini-swe-agent"
-source = { editable = "kernelgen/mini-swe-agent" }
+version = "2.4.3"
+source = { git = "https://github.com/SWE-agent/mini-swe-agent.git#408a133f68c3956937ac80645f64a120c6271fc8" }
 dependencies = [
     { name = "datasets" },
     { name = "jinja2" },
@@ -1359,54 +1407,6 @@ dependencies = [
     { name = "tenacity" },
     { name = "textual" },
     { name = "typer" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boto3", marker = "extra == 'modal'" },
-    { name = "contree-sdk", marker = "extra == 'contree'", specifier = ">=0.2.0" },
-    { name = "datasets" },
-    { name = "jinja2" },
-    { name = "litellm", specifier = ">=1.75.5,!=1.82.7,!=1.82.8" },
-    { name = "mike", marker = "extra == 'dev'" },
-    { name = "mini-swe-agent", extras = ["contree"], marker = "extra == 'full'" },
-    { name = "mini-swe-agent", extras = ["dev"], marker = "extra == 'full'" },
-    { name = "mini-swe-agent", extras = ["modal"], marker = "extra == 'full'" },
-    { name = "mkdocs-glightbox", marker = "extra == 'dev'" },
-    { name = "mkdocs-include-markdown-plugin", marker = "extra == 'dev'" },
-    { name = "mkdocs-material", marker = "extra == 'dev'" },
-    { name = "mkdocs-redirects", marker = "extra == 'dev'" },
-    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'dev'", specifier = ">=0.18" },
-    { name = "modal", marker = "extra == 'modal'" },
-    { name = "openai", specifier = "!=1.100.0,!=1.100.1" },
-    { name = "platformdirs" },
-    { name = "portkey-ai", marker = "extra == 'dev'" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "prompt-toolkit" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "pytest-xdist", marker = "extra == 'dev'" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "swe-rex", marker = "extra == 'dev'" },
-    { name = "swe-rex", marker = "extra == 'full'", specifier = ">=1.4.0" },
-    { name = "tenacity" },
-    { name = "textual" },
-    { name = "typer" },
-]
-provides-extras = ["full", "modal", "dev", "contree"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "datasets", specifier = ">=4.5.0" },
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
 ]
 
 [[package]]
@@ -2041,53 +2041,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/e4/4b64a97d71b2a83158134abbb2f5bd3f8a2ea691361282f010998f339ec7/pillow-12.2.0-cp314-cp314t-win32.whl", hash = "sha256:6bb77b2dcb06b20f9f4b4a8454caa581cd4dd0643a08bacf821216a16d9c8354", size = 6482084, upload-time = "2026-04-01T14:45:47.568Z" },
     { url = "https://files.pythonhosted.org/packages/ba/13/306d275efd3a3453f72114b7431c877d10b1154014c1ebbedd067770d629/pillow-12.2.0-cp314-cp314t-win_amd64.whl", hash = "sha256:6562ace0d3fb5f20ed7290f1f929cae41b25ae29528f2af1722966a0a02e2aa1", size = 7225152, upload-time = "2026-04-01T14:45:50.032Z" },
     { url = "https://files.pythonhosted.org/packages/ff/6e/cf826fae916b8658848d7b9f38d88da6396895c676e8086fc0988073aaf8/pillow-12.2.0-cp314-cp314t-win_arm64.whl", hash = "sha256:aa88ccfe4e32d362816319ed727a004423aab09c5cea43c01a4b435643fa34eb", size = 2556579, upload-time = "2026-04-01T14:45:52.529Z" },
-]
-
-[[package]]
-name = "pkb-cuda"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "cffi" },
-    { name = "cuda-core" },
-    { name = "cuda-pathfinder" },
-    { name = "google-generativeai" },
-    { name = "mini-swe-agent" },
-    { name = "modal" },
-    { name = "mpi4py" },
-    { name = "ninja" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "pytest" },
-    { name = "requests" },
-    { name = "sprocket" },
-    { name = "together" },
-    { name = "toml" },
-    { name = "torch" },
-    { name = "triton" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.49" },
-    { name = "cffi" },
-    { name = "cuda-core", specifier = ">=0.4" },
-    { name = "cuda-pathfinder", specifier = ">=1.2.3" },
-    { name = "google-generativeai", specifier = ">=0.8" },
-    { name = "mini-swe-agent", editable = "kernelgen/mini-swe-agent" },
-    { name = "modal", specifier = ">=1.0" },
-    { name = "mpi4py" },
-    { name = "ninja" },
-    { name = "numpy" },
-    { name = "openai", specifier = ">=1.0" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "requests", specifier = ">=2.28" },
-    { name = "sprocket", index = "https://pypi.together.ai/" },
-    { name = "together", specifier = ">=1.0" },
-    { name = "toml", specifier = ">=0.10" },
-    { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "triton", index = "https://download.pytorch.org/whl/cu128" },
 ]
 
 [[package]]

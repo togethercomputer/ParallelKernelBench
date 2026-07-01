@@ -1,5 +1,5 @@
 [project]
-name = "pkb-cuda"
+name = "dulaj-pkb-cuda"
 version = "0.1.0"
 description = "ParallelKernelBench – multi-GPU kernel evaluation harness"
 requires-python = ">=3.12"
@@ -38,7 +38,7 @@ url = "https://pypi.together.ai/"
 explicit = true
 
 [tool.uv.sources]
-mini-swe-agent = { path = "kernelgen/mini-swe-agent", editable = true }
+mini-swe-agent = { git = "https://github.com/SWE-agent/mini-swe-agent.git" }
 torch = { index = "pytorch-cu128" }
 triton = { index = "pytorch-cu128" }
 sprocket = { index = "together-pypi" }
@@ -95,7 +95,7 @@ TORCH_CUDA_ARCH_LIST = "9.0"
 [tool.jig.deploy]
 description = "ParallelKernelBench – distributed GPU kernel evaluation"
 gpu_type = "h100-80gb"
-gpu_count = 8
+gpu_count = 1
 cpu = 16
 memory = 128
 storage = 100
