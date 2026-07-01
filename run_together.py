@@ -13,11 +13,12 @@ Modes (same idea as run_modal.py):
           Stops after the first trial when outputs differ (mismatch), or when either job has no rank .pt
           URLs (no further RNG trials). Download only if --download (artifacts under trial_<k>/ per backend).
 
-Requires: TOGETHER_API_KEY, together CLI (pip install together), PyTorch (for --mode eval compare).
+Requires: TOGETHER_API_KEY, the `together` Python SDK (pip install together), PyTorch (for
+--mode eval compare). The target deployment/model is read from TOGETHER_DEPLOYMENT_NAME
+(default: dulaj-pkb-cuda).
 
-Stopping this process (Ctrl+C) does not cancel submitted Together jobs; the CLI has no documented
-``cancel`` — use ``together beta jig job-status --request-id …`` and reconcile the queue. On
-interrupt, this script prints any request IDs it was still polling.
+Stopping this process (Ctrl+C) attempts to cancel any still-pending Together jobs via the
+queue ``cancel`` API. Jobs already running cannot be canceled and are left to finish.
 
 Usage:
     python run_together.py --mode dryrun --problem 2
@@ -34,7 +35,6 @@ import json
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -59,26 +59,51 @@ except ImportError:
 
 from utils.problem_id import rank_outputs_compare_details, resolve_problem
 
-# Request IDs currently blocked in poll_until_done (Ctrl+C prints these; jobs may remain queued).
+# Deployment/model name the queue jobs are submitted to (overridable via env).
+TOGETHER_DEPLOYMENT_NAME = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "dulaj-pkb-cuda")
+
+# Request IDs currently in flight in poll_until_done (Ctrl+C tries to cancel these).
 _PENDING_TOGETHER_REQUEST_IDS: list[str] = []
+
+_TOGETHER_CLIENT = None
+
+
+def _client():
+    """Lazily build and cache a Together SDK client (auth from TOGETHER_API_KEY)."""
+    global _TOGETHER_CLIENT
+    if _TOGETHER_CLIENT is None:
+        if "TOGETHER_API_KEY" not in os.environ:
+            print("Error: TOGETHER_API_KEY is not set.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            from together import Together
+        except ImportError:
+            print(
+                "Error: the `together` SDK is not installed (pip install together).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _TOGETHER_CLIENT = Together(api_key=os.environ["TOGETHER_API_KEY"])
+    return _TOGETHER_CLIENT
 
 
 def _together_sigint_handler(signum: int, frame: object) -> None:
-    """On Ctrl+C, show in-flight Together IDs so you can job-status / reconcile queue manually."""
+    """On Ctrl+C, try to cancel still-pending Together jobs (running jobs can't be canceled)."""
     ids = list(_PENDING_TOGETHER_REQUEST_IDS)
     if ids:
         print(
-            "\n[run_together] Interrupted: these request IDs were still in flight "
-            "(Together may keep them queued or running):",
+            "\n[run_together] Interrupted: attempting to cancel in-flight request IDs...",
             file=sys.stderr,
         )
+        client = _client()
         for rid in ids:
-            print(f"  {rid}", file=sys.stderr)
-        print(
-            "[run_together] Check: together beta jig job-status --request-id <id>",
-            file=sys.stderr,
-        )
-        print("[run_together] Backlog: together beta jig queue-status", file=sys.stderr)
+            try:
+                client.beta.jig.queue.cancel(
+                    model=TOGETHER_DEPLOYMENT_NAME, request_id=rid
+                )
+                print(f"  canceled {rid}", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - already running / not cancelable
+                print(f"  could not cancel {rid}: {exc}", file=sys.stderr)
     raise KeyboardInterrupt
 
 
@@ -90,42 +115,6 @@ def _perf_json_urls(urls: list[tuple[str, str]]) -> list[tuple[str, str]]:
         if base.startswith("rank_") and base.endswith("_perf.json"):
             out.append((key, url))
     return sorted(out)
-
-
-def _run_together(args: list[str]) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    if "TOGETHER_API_KEY" not in env:
-        print("Error: TOGETHER_API_KEY is not set.", file=sys.stderr)
-        sys.exit(1)
-    return subprocess.run(
-        ["together", "beta", "jig", *args],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-
-def _extract_json_from_stdout(stdout: str) -> dict | None:
-    text = stdout.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
 
 
 def submit_job(
@@ -159,58 +148,41 @@ def submit_job(
         payload_dict["measure_profiling_iters"] = int(measure_profiling_iters)
     if profile:
         payload_dict["profile"] = True
-    payload = json.dumps(payload_dict)
-    result = _run_together(["submit", "--payload", payload])
-    if result.returncode != 0:
-        print(result.stderr or result.stdout, file=sys.stderr)
+    try:
+        resp = _client().beta.jig.queue.submit(
+            model=TOGETHER_DEPLOYMENT_NAME,
+            payload=payload_dict,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Job submit failed: {exc}", file=sys.stderr)
         sys.exit(1)
-    data = _extract_json_from_stdout(result.stdout)
-    if isinstance(data, dict) and data.get("request_id"):
-        return data["request_id"]
-    print("Could not parse request_id from submit output.", file=sys.stderr)
-    if result.stdout:
-        print("Stdout:", result.stdout[:500], file=sys.stderr)
+    request_id = getattr(resp, "request_id", None)
+    if request_id:
+        return request_id
+    print("Could not read request_id from submit response.", file=sys.stderr)
     sys.exit(1)
 
 
 def poll_until_done(request_id: str, poll_interval: float = 5.0) -> dict:
+    client = _client()
     _PENDING_TOGETHER_REQUEST_IDS.append(request_id)
     try:
         while True:
-            result = _run_together(["job-status", "--request-id", request_id])
-            if result.returncode != 0:
-                print(result.stderr or result.stdout, file=sys.stderr)
+            try:
+                resp = client.beta.jig.queue.retrieve(
+                    model=TOGETHER_DEPLOYMENT_NAME, request_id=request_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"Job status check failed: {exc}", file=sys.stderr)
                 sys.exit(1)
-            data = _extract_json_from_stdout(result.stdout)
-            if isinstance(data, dict) and "status" in data:
-                status = data.get("status")
-                if status == "done":
-                    return data
-                if status == "error":
-                    print("Job failed:", data.get("info") or data, file=sys.stderr)
-                    sys.exit(1)
-                status_str = status
-            else:
-                text = result.stdout.strip()
-                last_brace = text.rfind("{")
-                if last_brace != -1:
-                    try:
-                        data = json.loads(text[last_brace:])
-                        if isinstance(data, dict) and "status" in data:
-                            status = data.get("status")
-                            if status == "done":
-                                return data
-                            if status == "error":
-                                print("Job failed:", data.get("info") or data, file=sys.stderr)
-                                sys.exit(1)
-                            status_str = status
-                        else:
-                            status_str = "?"
-                    except json.JSONDecodeError:
-                        status_str = "?"
-                else:
-                    status_str = "?"
-            print(f"  Waiting for job {request_id[:8]}... (status: {status_str})")
+            data = resp.model_dump()
+            status = data.get("status")
+            if status == "done":
+                return data
+            if status in ("failed", "canceled"):
+                print(f"Job {status}:", data.get("info") or data, file=sys.stderr)
+                sys.exit(1)
+            print(f"  Waiting for job {request_id[:8]}... (status: {status})")
             time.sleep(poll_interval)
     finally:
         try:
