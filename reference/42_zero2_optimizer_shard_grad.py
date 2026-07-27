@@ -1,3 +1,6 @@
+# ZeRO-2: optimizer-state + gradient sharding. Gradients are REDUCE-SCATTERED
+# so each rank only materializes its own shard; compare problem 41 (ZeRO-1),
+# which all-reduces the full flat gradient on every rank before slicing.
 from __future__ import annotations
 
 import math
