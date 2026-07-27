@@ -48,7 +48,7 @@ def save_tensor(output, logs_dir: str, rank: int) -> str:
 # INPUT TENSOR STANDARD (tuple-only)
 # ---------------------------------------------------------------------------
 # create_input_tensor() returns a tuple unpacked as solution_fn(*x). Entries are usually tensors
-# but may include Python scalars / dicts / dataclasses (e.g. problem 4, problems 100–105).
+# but may include Python scalars / lists / nn.Modules (e.g. problems 4, 21, 31, 70).
 #   - solution(tensor) for single-tensor problems: x is (tensor,)
 #   - solution(t1, t2) for multi-arg problems: x is (t1, t2, ...)
 # Output from solution_fn may still be a single tensor or a tuple; save_tensor() handles both.
@@ -400,8 +400,10 @@ def create_input_tensor(
     # 18: rms_norm
     elif problem_id == 18:
         _seed(problem_id, rank, trial)
-        hidden = torch.randn(base_shape, dtype=dtype, device=dev)
-        weight = torch.randn((N,), dtype=dtype, device=dev)
+        hidden_dim = _round_up_multiple(N, world_size)
+        local_hidden_dim = hidden_dim // world_size
+        hidden = torch.randn((M, local_hidden_dim), dtype=dtype, device=dev)
+        weight = torch.randn((local_hidden_dim,), dtype=dtype, device=dev)
         return (hidden, weight, 1e-5)
 
     # 19: blocked_fp8_quantize
@@ -409,14 +411,17 @@ def create_input_tensor(
         _seed(problem_id, rank, trial)
         return (torch.randn(base_shape, dtype=dtype, device=dev), 128)
 
-    # 20: blocked_fp8_dequantize
+    # 20: blocked_fp8_dequantize — inputs are genuinely quantized: per-block
+    # absmax scales (positive) and quantized mantissas derived from them.
     elif problem_id == 20:
         _seed(problem_id, rank, trial)
         chunk_numel = M * N
         block_size = 128
-        num_blocks_per_chunk = chunk_numel // block_size
-        local_y = torch.randn((world_size, M, N), dtype=dtype, device=dev)
-        local_s = torch.randn((world_size, num_blocks_per_chunk), dtype=dtype, device=dev)
+        x = torch.randn((world_size, M, N), dtype=torch.float32, device=dev)
+        xb = x.reshape(-1, block_size)
+        s = (xb.abs().amax(dim=1) / 448.0).clamp(min=1e-8)
+        local_y = (xb / s.unsqueeze(1)).reshape(world_size, M, N).to(dtype)
+        local_s = s.reshape(world_size, chunk_numel // block_size).to(dtype)
         return (local_y, local_s, block_size)
 
     # 21: clip_grad_norm_no_ep
@@ -444,12 +449,22 @@ def create_input_tensor(
         grad_loss_sum = torch.zeros((), dtype=dtype, device=dev)
         return (loss, local_valid, global_valid, grad_normalized_loss, grad_loss_sum)
 
-    # 24: load_balancing_loss_fn
+    # 24: load_balancing_loss_fn — multi-layer gate logits (tuple) plus a real
+    # attention mask so the masked normalization path is exercised; the local
+    # compute (softmax/one-hot/masked reductions over L*B*S tokens) is the
+    # fusion target ahead of the scalar all-reduce.
     elif problem_id == 24:
         _seed(problem_id, rank, trial)
         num_experts = 8
-        gate_logits = torch.randn((M, num_experts), dtype=dtype, device=dev)
-        return (gate_logits, num_experts, 2, None)
+        num_layers = 4
+        batch = 8
+        seq = max(32, M // 8)
+        gate_logits = tuple(
+            torch.randn((batch * seq, num_experts), dtype=dtype, device=dev)
+            for _ in range(num_layers)
+        )
+        attention_mask = (torch.rand((batch, seq), device=dev) > 0.1).to(dtype)
+        return (gate_logits, num_experts, 2, attention_mask)
 
     # 25: importance_sampling_loss
     elif problem_id == 25:
@@ -559,14 +574,20 @@ def create_input_tensor(
         org_hidden_states_shape = torch.Size([num_tokens, N])
         return (expert_outputs, routing_weights, selected_experts, num_experts, input_splits, output_splits, num_global_tokens_per_local_expert, routing_map, perm, org_hidden_states_shape, None)
 
-    # 30: moe_epgroupgemm_lora_backward
+    # 30: moe_epgroupgemm_lora_backward — per-local-expert activations and
+    # output-grads; the solution computes the shared LoRA adapter grads via
+    # grouped GEMMs then all-reduces them across the EP group.
     elif problem_id == 30:
         _seed(problem_id, rank, trial)
-        r, in_f, out_f = 8, N, N
-        grad_fc1_1 = torch.randn((r, in_f), dtype=dtype, device=dev)
-        grad_fc1_2 = torch.randn((r, in_f), dtype=dtype, device=dev)
-        grad_fc2 = torch.randn((out_f, r), dtype=dtype, device=dev)
-        return (grad_fc1_1, grad_fc1_2, grad_fc2, None)
+        num_local_experts = 4
+        tokens = max(64, M // 4)
+        r, d_in, d_out = 8, N, N
+        expert_inputs = torch.randn((num_local_experts, tokens, d_in), dtype=dtype, device=dev)
+        grad_fc1_1_out = torch.randn((num_local_experts, tokens, r), dtype=dtype, device=dev)
+        grad_fc1_2_out = torch.randn((num_local_experts, tokens, r), dtype=dtype, device=dev)
+        fc2_lora_acts = torch.randn((num_local_experts, tokens, r), dtype=dtype, device=dev)
+        grad_expert_outputs = torch.randn((num_local_experts, tokens, d_out), dtype=dtype, device=dev)
+        return (expert_inputs, grad_fc1_1_out, grad_fc1_2_out, fc2_lora_acts, grad_expert_outputs, None)
 
     # 31: fused_moe_fwd
     elif problem_id == 31:
@@ -627,11 +648,13 @@ def create_input_tensor(
         x = torch.randn(base_shape, dtype=dtype, device=dev)
         return (x, 0, 1, None)
 
-    # 34: ulysses_all_gather_into_tensor_primitive
+    # 34: ulysses_all_gather_into_tensor_primitive — gather along dim 1 (the
+    # Ulysses sequence dim), which forces a gather + strided-write reorder
+    # rather than the plain dim-0 all_gather of problem 2.
     elif problem_id == 34:
         _seed(problem_id, rank, trial)
         x = torch.randn(base_shape, dtype=dtype, device=dev)
-        return (x, None)
+        return (x, 1, None)
 
     # 35: ulysses_all_gather_variable_primitive
     elif problem_id == 35:
@@ -1010,26 +1033,28 @@ def create_input_tensor(
             None,
         )
 
-    # 50: moe_ep_wide
+    # 50: moe_ep_wide — each rank hosts num_local_experts DISTINCT experts;
+    # weights are stacked (E_local, ...) tensors driving a ragged grouped GEMM.
     elif problem_id == 50:
         _seed(problem_id, rank, trial)
         num_experts = world_size * 2
+        num_local_experts = 2
         top_k = 2
         hidden_dim = N
         inter_dim = 128
         hidden_states = torch.randn((M, hidden_dim), dtype=dtype, device=dev)
         gate_weight = torch.randn((num_experts, hidden_dim), dtype=dtype, device=dev)
         gate_bias = torch.randn((num_experts,), dtype=dtype, device=dev)
-        gate_proj = _linear(hidden_dim, inter_dim, dtype, dev)
-        up_proj = _linear(hidden_dim, inter_dim, dtype, dev)
-        down_proj = _linear(inter_dim, hidden_dim, dtype, dev)
+        w_gate = torch.randn((num_local_experts, inter_dim, hidden_dim), dtype=dtype, device=dev) * 0.02
+        w_up = torch.randn((num_local_experts, inter_dim, hidden_dim), dtype=dtype, device=dev) * 0.02
+        w_down = torch.randn((num_local_experts, hidden_dim, inter_dim), dtype=dtype, device=dev) * 0.02
         return (
             hidden_states,
             gate_weight,
             gate_bias,
-            gate_proj,
-            up_proj,
-            down_proj,
+            w_gate,
+            w_up,
+            w_down,
             num_experts,
             top_k,
             None,
@@ -1285,7 +1310,8 @@ def create_input_tensor(
 
         return (x, psi, weight, groups, nlon_out, nlon_in, azimuth_group, polar_group, bias)
 
-    # 63: deepmd_kalman_filter_optimizer
+    # 63: deepmd_kalman_filter_optimizer (fp32; uniform block structure so the
+    # weight exchange is a single fixed-size all-gather)
     elif problem_id == 63:
         _seed(problem_id, rank, trial)
         num_blocks = 8
@@ -1294,34 +1320,38 @@ def create_input_tensor(
         weights = []
         P = []
         for _ in range(num_blocks):
-            h = torch.randn((block, 1), dtype=torch.float64, device=dev) * 0.01
-            w = torch.randn((block, 1), dtype=torch.float64, device=dev)
-            p = torch.eye(block, dtype=torch.float64, device=dev)
+            h = torch.randn((block, 1), dtype=torch.float32, device=dev) * 0.01
+            w = torch.randn((block, 1), dtype=torch.float32, device=dev)
+            p = torch.eye(block, dtype=torch.float32, device=dev)
             H.append(h)
             weights.append(w)
             P.append(p)
-        error = torch.randn((), dtype=torch.float64, device=dev)
+        error = torch.randn((), dtype=torch.float32, device=dev)
         kalman_lambda = 0.98
         kalman_nue = 0.9987
         return (H, error, weights, P, kalman_lambda, kalman_nue)
 
-    # 64: gnn_neighbor_sampling
+    # 64: gnn_neighbor_sampling — irregular random graph (variable degrees,
+    # random neighbors) shared by all ranks; per-rank random seed frontier.
     elif problem_id == 64:
         _seed(problem_id, 0, trial)
         num_nodes = _round_up_multiple(max(10000, min(M, 100000)), world_size)
-        degree = 16
+        avg_degree = 16
         fanouts = [10, 5]
         node_to_rank = (torch.arange(num_nodes, device=dev, dtype=torch.long) % world_size).contiguous()
 
-        colptr = (torch.arange(num_nodes + 1, device=dev, dtype=torch.long) * degree).contiguous()
-        node_ids = torch.arange(num_nodes, device=dev, dtype=torch.long).unsqueeze(1)
-        offsets = torch.arange(1, degree + 1, device=dev, dtype=torch.long).unsqueeze(0)
-        row = ((node_ids + offsets) % num_nodes).reshape(-1).contiguous()
+        # Same RNG stream on every rank -> identical replicated graph.
+        deg = torch.randint(1, 2 * avg_degree, (num_nodes,), dtype=torch.long, device=dev)
+        colptr = torch.zeros(num_nodes + 1, dtype=torch.long, device=dev)
+        colptr[1:] = deg.cumsum(0)
+        row = torch.randint(0, num_nodes, (int(deg.sum().item()),), dtype=torch.long, device=dev)
 
         seeds_per_rank = max(512, min(N // max(world_size, 1), 2048))
-        start = rank * seeds_per_rank
-        seed_nodes = (torch.arange(seeds_per_rank, device=dev, dtype=torch.long) + start) % num_nodes
-        return (seed_nodes.contiguous(), fanouts, colptr.contiguous(), row, node_to_rank, None, False)
+        # Distinct stream from the graph RNG (offset), varying per rank;
+        # randperm keeps the seed frontier duplicate-free.
+        torch.manual_seed(42 + problem_id * 1000 + 50000 + rank + trial * 1_000_003)
+        seed_nodes = torch.randperm(num_nodes, device=dev)[:seeds_per_rank].to(torch.long)
+        return (seed_nodes.contiguous(), fanouts, colptr.contiguous(), row.contiguous(), node_to_rank, None, False)
 
     # 65: gnn_feature_exchange_all2all
     elif problem_id == 65:
@@ -1758,13 +1788,15 @@ def create_input_tensor(
         top_p = 0.9
         return (logits.contiguous(), target.contiguous(), None, top_k, top_p)
 
-    # 83: vocab_parallel_log_prob_topk_chunked
+    # 83: vocab_parallel_log_prob_topk_chunked — long sequences and a larger
+    # vocab so the sequence-chunked pipeline (the point of this variant vs 82)
+    # actually processes many chunks.
     elif problem_id == 83:
         _seed(problem_id, rank, trial)
-        batch = max(1, min(M // 512, 4))
-        seq_len = max(world_size, min(M // 128, 32))
+        batch = max(1, min(M // 256, 4))
+        seq_len = max(world_size, min(M // 4, 512))
         seq_len = _round_up_multiple(seq_len, world_size)
-        vocab_size = 256
+        vocab_size = 2048
         local_vocab = vocab_size // world_size
 
         logits = torch.randn((batch, seq_len, local_vocab), dtype=dtype, device=dev)
@@ -1789,13 +1821,14 @@ def create_input_tensor(
             chunk_size,
         )
 
-    # 84: vocab_parallel_log_prob_topk_chunked_backward
+    # 84: vocab_parallel_log_prob_topk_chunked_backward — same long-sequence
+    # chunked regime as 83.
     elif problem_id == 84:
         _seed(problem_id, rank, trial)
-        batch = max(1, min(M // 512, 4))
-        seq_len = max(world_size, min(M // 128, 32))
+        batch = max(1, min(M // 256, 4))
+        seq_len = max(world_size, min(M // 4, 512))
         seq_len = _round_up_multiple(seq_len, world_size)
-        vocab_size = 256
+        vocab_size = 2048
         local_vocab = vocab_size // world_size
 
         logits = torch.randn((batch, seq_len, local_vocab), dtype=dtype, device=dev)

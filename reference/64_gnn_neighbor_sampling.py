@@ -1,6 +1,14 @@
+# Distributed multi-hop GNN neighbor sampling over a partitioned CSC graph.
+#
+# Each hop: route frontier nodes to their owner rank (all_to_all), take the
+# first `fanout` neighbors of each received node from the local CSC shard
+# (deterministic selection so candidates can be checked bit-for-bit),
+# return the sampled neighborhoods to the requesting ranks (all_to_all),
+# dedup the new frontier, and finally relabel the sampled subgraph. All graph
+# work is vectorized on-device; the host only touches the split-size metadata
+# that all_to_all requires.
 from typing import List, Optional, Tuple
 
-import numpy as np
 import torch
 import torch.distributed as dist
 
@@ -11,45 +19,53 @@ def _sample_one_hop_csc_dist(
     colptr: torch.Tensor,
     row: torch.Tensor,
     replace: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Deterministically take the first min(k, deg) neighbors of each input node.
+
+    Returns (input_nodes ++ sampled_neighbors, sampled_edge_ids, per-node counts).
+    """
+    device = input_nodes.device
     n = input_nodes.numel()
-    sampled_nodes = []
-    sampled_edges = []
-    cumsum = [n]
+    if n == 0:
+        empty = torch.empty(0, dtype=torch.long, device=device)
+        return input_nodes, empty, empty
 
-    for i in range(n):
-        v = int(input_nodes[i].item())
-        start = int(colptr[v].item())
-        end = int(colptr[v + 1].item())
-        deg = end - start
-        take = min(k, deg) if k >= 0 else deg
+    start = colptr[input_nodes]
+    end = colptr[input_nodes + 1]
+    deg = end - start
+    take = deg.clamp(max=k) if k >= 0 else deg
 
-        if take > 0:
-            perm = torch.arange(take, device=input_nodes.device)
-            sampled_nodes.append(row[start:end].index_select(0, perm))
-            sampled_edges.append(torch.arange(start, end, device=input_nodes.device).index_select(0, perm))
+    total = int(take.sum().item())
+    if total == 0:
+        empty = torch.empty(0, dtype=torch.long, device=device)
+        return input_nodes, empty, take
 
-        cumsum.append(cumsum[-1] + take)
-
-    nbr_tensor = (
-        torch.cat(sampled_nodes)
-        if sampled_nodes
-        else torch.empty(0, dtype=torch.long, device=input_nodes.device)
-    )
-    eid_tensor = (
-        torch.cat(sampled_edges)
-        if sampled_edges
-        else torch.empty(0, dtype=torch.long, device=input_nodes.device)
-    )
-    return torch.cat([input_nodes, nbr_tensor]), eid_tensor, cumsum
+    seg = torch.repeat_interleave(torch.arange(n, device=device), take)
+    out_ptr = torch.zeros(n + 1, dtype=torch.long, device=device)
+    out_ptr[1:] = take.cumsum(0)
+    local_off = torch.arange(total, device=device) - out_ptr[seg]
+    eid = start[seg] + local_off
+    nbr = row[eid]
+    return torch.cat([input_nodes, nbr]), eid, take
 
 
 def _remove_duplicates(out_node: torch.Tensor, node: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Keep first occurrences of cat([node, out_node]) in encounter order."""
     num_nodes = node.numel()
-    node_combined = torch.cat([node, out_node])
-    _, idx = np.unique(node_combined.cpu().numpy(), return_index=True)
-    idx = torch.from_numpy(idx).to(node.device).sort().values
-    node = node_combined[idx]
+    combined = torch.cat([node, out_node])
+    uniq, inverse = torch.unique(combined, return_inverse=True)
+    first_idx = torch.full(
+        (uniq.numel(),), combined.numel(), dtype=torch.long, device=combined.device
+    )
+    first_idx.scatter_reduce_(
+        0,
+        inverse,
+        torch.arange(combined.numel(), device=combined.device),
+        reduce="amin",
+        include_self=True,
+    )
+    order = first_idx.sort().values
+    node = combined[order]
     src = node[num_nodes:]
     return src, node
 
@@ -75,16 +91,14 @@ def _relabel_neighborhood(
 
 
 def _exchange_nodes(
-    send_nodes_list: List[torch.Tensor],
+    send_nodes: torch.Tensor,
+    send_counts: torch.Tensor,
     group: dist.ProcessGroup,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    world_size = dist.get_world_size(group)
-    device = send_nodes_list[0].device
-    send_counts = torch.tensor([x.numel() for x in send_nodes_list], dtype=torch.long, device=device)
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    device = send_nodes.device
     recv_counts = torch.empty_like(send_counts)
     dist.all_to_all_single(recv_counts, send_counts, group=group)
 
-    send_nodes = torch.cat(send_nodes_list) if send_nodes_list else torch.empty(0, dtype=torch.long, device=device)
     recv_nodes = torch.empty(int(recv_counts.sum().item()), dtype=torch.long, device=device)
     dist.all_to_all_single(
         recv_nodes,
@@ -93,7 +107,7 @@ def _exchange_nodes(
         output_split_sizes=recv_counts.cpu().tolist(),
         group=group,
     )
-    return recv_nodes, send_counts, recv_counts
+    return recv_nodes, recv_counts
 
 
 def _exchange_replies(
@@ -103,14 +117,13 @@ def _exchange_replies(
     recv_counts: torch.Tensor,
     group: dist.ProcessGroup,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    world_size = dist.get_world_size(group)
     device = sampled_nodes.device
-    recv_splits = recv_counts.cpu().tolist()
-    send_node_counts = torch.empty(world_size, dtype=torch.long, device=device)
-    offset = 0
-    for r, count in enumerate(recv_splits):
-        send_node_counts[r] = sampled_counts[offset : offset + count].sum()
-        offset += count
+    # sampled_counts is grouped by requesting rank (recv_counts entries per rank).
+    rank_bounds = torch.zeros(recv_counts.numel() + 1, dtype=torch.long, device=device)
+    rank_bounds[1:] = recv_counts.cumsum(0)
+    counts_cumsum = torch.zeros(sampled_counts.numel() + 1, dtype=torch.long, device=device)
+    counts_cumsum[1:] = sampled_counts.cumsum(0)
+    send_node_counts = counts_cumsum[rank_bounds[1:]] - counts_cumsum[rank_bounds[:-1]]
 
     reply_node_counts = torch.empty_like(send_node_counts)
     dist.all_to_all_single(reply_node_counts, send_node_counts, group=group)
@@ -139,7 +152,7 @@ def _exchange_replies(
     dist.all_to_all_single(
         reply_counts,
         sampled_counts,
-        input_split_sizes=recv_splits,
+        input_split_sizes=recv_counts.cpu().tolist(),
         output_split_sizes=reply_count_counts.cpu().tolist(),
         group=group,
     )
@@ -171,54 +184,43 @@ def solution(
         if src.numel() == 0:
             break
 
+        # Stable-partition the frontier by owner rank.
         partition_ids = node_to_rank[src].to(torch.long)
-        partition_orders = torch.empty_like(partition_ids)
-        send_nodes_list = []
-        send_pos_list = []
-        for r in range(world_size):
-            pos = (partition_ids == r).nonzero(as_tuple=False).flatten()
-            partition_orders[pos] = torch.arange(pos.numel(), dtype=torch.long, device=device)
-            send_nodes_list.append(src[pos])
-            send_pos_list.append(pos)
+        order = torch.argsort(partition_ids, stable=True)
+        send_nodes = src[order]
+        send_counts = torch.bincount(partition_ids, minlength=world_size)
 
-        recv_nodes, send_counts, recv_counts = _exchange_nodes(send_nodes_list, group)
-        node_out, edge_out, cumsum = _sample_one_hop_csc_dist(
+        recv_nodes, recv_counts = _exchange_nodes(send_nodes, send_counts, group)
+        node_out, edge_out, sampled_counts = _sample_one_hop_csc_dist(
             recv_nodes, int(fanout), local_adj_row_ptr, local_adj_col, replace
         )
-
-        seed_size = recv_nodes.numel()
-        sampled_nodes = node_out[seed_size:]
-        sampled_counts = torch.tensor(
-            np.subtract(np.array(cumsum[1:]), np.array(cumsum[:-1])),
-            dtype=torch.long,
-            device=device,
-        )
+        sampled_nodes = node_out[recv_nodes.numel():]
 
         reply_nodes, reply_edges, reply_counts = _exchange_replies(
             sampled_nodes, edge_out, sampled_counts, recv_counts, group
         )
 
-        rank_offsets = torch.cat(
-            [send_counts.new_zeros(1), torch.cumsum(send_counts, dim=0)[:-1]]
-        )
-        grouped_index = rank_offsets[partition_ids] + partition_orders
-        node_chunks = list(torch.split(reply_nodes, reply_counts.cpu().tolist()))
-        edge_chunks = list(torch.split(reply_edges, reply_counts.cpu().tolist()))
+        # Reply chunks arrive in send order (frontier sorted by owner rank);
+        # build gather indices that reorder them back to original frontier order.
+        chunk_off = torch.zeros(reply_counts.numel() + 1, dtype=torch.long, device=device)
+        chunk_off[1:] = reply_counts.cumsum(0)
 
-        ordered_nodes = []
-        ordered_edges = []
-        ordered_dst = []
-        for idx in grouped_index.tolist():
-            ordered_nodes.append(node_chunks[idx])
-            ordered_edges.append(edge_chunks[idx])
-        for dst_node, count in zip(src, reply_counts[grouped_index]):
-            ordered_dst.append(dst_node.repeat(int(count.item())))
-
-        out_node = torch.cat(ordered_nodes) if ordered_nodes else seed.new_empty(0)
-        out_edge = torch.cat(ordered_edges) if ordered_edges else seed.new_empty(0)
-        out_dst = torch.cat(ordered_dst) if ordered_dst else seed.new_empty(0)
-        if out_node.numel() == 0:
+        total = int(reply_counts.sum().item())
+        if total == 0:
             break
+
+        inv = torch.empty_like(order)
+        inv[order] = torch.arange(order.numel(), device=device)
+        take = reply_counts[inv]  # counts per frontier node in original order
+        seg = torch.repeat_interleave(torch.arange(src.numel(), device=device), take)
+        out_ptr = torch.zeros(src.numel() + 1, dtype=torch.long, device=device)
+        out_ptr[1:] = take.cumsum(0)
+        local_off = torch.arange(total, device=device) - out_ptr[seg]
+        gidx = chunk_off[inv][seg] + local_off
+
+        out_node = reply_nodes[gidx]
+        out_edge = reply_edges[gidx]
+        out_dst = torch.repeat_interleave(src, take)
 
         src, node = _remove_duplicates(out_node, node)
         node_with_dupl.append(out_node)

@@ -50,16 +50,22 @@ def _gather_tiles(
         return tiles
 
     world_size = dist.get_world_size(group=group)
-    local_shapes = [tuple(tile.shape) for tile in tiles]
-    all_shapes: List[List[Tuple[int, ...]]] = [[] for _ in range(world_size)]
-    dist.all_gather_object(all_shapes, local_shapes, group=group)
+    device = template.device
+    max_tiles = -(-len(global_order) // world_size)
 
-    local_flat = (
-        torch.cat([tile.reshape(-1).contiguous() for tile in tiles], dim=0)
-        if tiles
-        else template.new_empty(0)
+    # Exchange tile shapes as a fixed-size tensor (5 dims each, -1 padded).
+    shape_buf = torch.full((max_tiles, 5), -1, dtype=torch.long, device=device)
+    for i, tile in enumerate(tiles):
+        shape_buf[i] = torch.tensor(tile.shape, dtype=torch.long, device=device)
+    all_shape_buf = torch.empty(
+        (world_size * max_tiles, 5), dtype=torch.long, device=device
     )
-    local_size = int(local_flat.numel())
+    dist.all_gather_into_tensor(all_shape_buf, shape_buf, group=group)
+    all_shapes_list = all_shape_buf.view(world_size, max_tiles, 5).cpu().tolist()
+    all_shapes: List[List[Tuple[int, ...]]] = [
+        [tuple(s) for s in shapes if s[0] >= 0] for shapes in all_shapes_list
+    ]
+
     rank_sizes: List[int] = []
     for shapes in all_shapes:
         total = 0
@@ -69,20 +75,22 @@ def _gather_tiles(
                 numel *= size
             total += numel
         rank_sizes.append(total)
-    send = local_flat.repeat(world_size)
-    recv = template.new_empty(sum(rank_sizes))
-    dist.all_to_all_single(
-        recv,
-        send,
-        output_split_sizes=rank_sizes,
-        input_split_sizes=[local_size] * world_size,
-        group=group,
+
+    # Pad flattened payloads to the max rank size and all-gather once.
+    local_flat = (
+        torch.cat([tile.reshape(-1).contiguous() for tile in tiles], dim=0)
+        if tiles
+        else template.new_empty(0)
     )
+    max_size = max(rank_sizes)
+    send = template.new_zeros(max_size)
+    send[: local_flat.numel()] = local_flat
+    recv = template.new_empty(world_size * max_size)
+    dist.all_gather_into_tensor(recv, send, group=group)
 
     gathered: List[torch.Tensor] = []
-    offset = 0
-    for shapes, total in zip(all_shapes, rank_sizes):
-        rank_buf = recv[offset : offset + total]
+    for r, shapes in enumerate(all_shapes):
+        rank_buf = recv[r * max_size : r * max_size + rank_sizes[r]]
         rank_offset = 0
         for shape in shapes:
             numel = 1
@@ -90,33 +98,47 @@ def _gather_tiles(
                 numel *= size
             gathered.append(rank_buf[rank_offset : rank_offset + numel].view(shape))
             rank_offset += numel
-        offset += total
 
     by_index = {tile_idx: tile for tile_idx, tile in zip(global_order, gathered)}
     return [by_index[idx] for idx in sorted(by_index)]
 
 
+def _ramp(extent: int, dim: int, like: torch.Tensor) -> torch.Tensor:
+    """Blend ramp [0, 1) broadcastable along `dim` of a 5-D tensor."""
+    shape = [1] * 5
+    shape[dim] = extent
+    return (
+        torch.arange(extent, device=like.device, dtype=like.dtype) / extent
+    ).reshape(shape)
+
+
 def _blend_t(prev: torch.Tensor, cur: torch.Tensor, extent: int) -> torch.Tensor:
     extent = min(prev.shape[2], cur.shape[2], extent)
-    for idx in range(extent):
-        ratio = idx / extent
-        cur[:, :, idx] = prev[:, :, -extent + idx] * (1.0 - ratio) + cur[:, :, idx] * ratio
+    if extent > 0:
+        ratio = _ramp(extent, 2, cur)
+        cur[:, :, :extent] = (
+            prev[:, :, -extent:] * (1.0 - ratio) + cur[:, :, :extent] * ratio
+        )
     return cur
 
 
 def _blend_h(prev: torch.Tensor, cur: torch.Tensor, extent: int) -> torch.Tensor:
     extent = min(prev.shape[3], cur.shape[3], extent)
-    for idx in range(extent):
-        ratio = idx / extent
-        cur[:, :, :, idx] = prev[:, :, :, -extent + idx] * (1.0 - ratio) + cur[:, :, :, idx] * ratio
+    if extent > 0:
+        ratio = _ramp(extent, 3, cur)
+        cur[:, :, :, :extent] = (
+            prev[:, :, :, -extent:] * (1.0 - ratio) + cur[:, :, :, :extent] * ratio
+        )
     return cur
 
 
 def _blend_w(prev: torch.Tensor, cur: torch.Tensor, extent: int) -> torch.Tensor:
     extent = min(prev.shape[4], cur.shape[4], extent)
-    for idx in range(extent):
-        ratio = idx / extent
-        cur[:, :, :, :, idx] = prev[:, :, :, :, -extent + idx] * (1.0 - ratio) + cur[:, :, :, :, idx] * ratio
+    if extent > 0:
+        ratio = _ramp(extent, 4, cur)
+        cur[:, :, :, :, :extent] = (
+            prev[:, :, :, :, -extent:] * (1.0 - ratio) + cur[:, :, :, :, :extent] * ratio
+        )
     return cur
 
 

@@ -1,52 +1,17 @@
-# Expert-parallel (EP) fused MoE forward — WIDE EP.
+# Expert-parallel (EP) fused MoE forward — WIDE EP (multiple experts per rank).
 #
-# Same kernel as problem 31 (router -> permute -> all_to_all dispatch -> per-expert
-# SiLU MLP -> all_to_all combine -> unpermute), but the harness sets
-# num_experts == world_size * 2, i.e. multiple experts hosted per rank. This stresses
-# the per-rank local expert loop and the larger, more fragmented all_to_all token
-# dispatch relative to the balanced case.
+# num_experts == world_size * 2, so each rank hosts num_local_experts = 2
+# DISTINCT experts with their own weights (stacked as (E_local, ...) tensors).
+# Dispatch uses dynamic variable splits like problem 31, but the local compute
+# is a grouped GEMM over ragged per-expert token groups — received tokens are
+# regrouped from (source rank, expert) order to expert-major order, each local
+# expert runs its own SiLU MLP on its segment, and results are regrouped and
+# returned. The ragged grouped GEMM + regrouping is the wide-EP-specific
+# fusion opportunity that the single-expert problems (31 / 49 / 51) don't have.
 from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
-
-
-class _AllToAll(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, group, input, output_split_sizes, input_split_sizes):
-        ctx.group = group
-        ctx.output_split_sizes = output_split_sizes
-        ctx.input_split_sizes = input_split_sizes
-        if dist.get_world_size(group=group) == 1:
-            return input.contiguous()
-        input = input.contiguous()
-        if output_split_sizes is None:
-            output = torch.empty_like(input)
-        else:
-            output = torch.empty(
-                size=(sum(output_split_sizes), input.size(1)),
-                dtype=input.dtype,
-                device=input.device,
-            )
-        dist.all_to_all_single(
-            output,
-            input,
-            output_split_sizes=output_split_sizes,
-            input_split_sizes=input_split_sizes,
-            group=group,
-        )
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        return (
-            None,
-            _AllToAll.apply(
-                ctx.group, grad_output, ctx.input_split_sizes, ctx.output_split_sizes
-            ),
-            None,
-            None,
-        )
 
 
 def _all_to_all(
@@ -55,14 +20,32 @@ def _all_to_all(
     output_split_sizes: Optional[List[int]],
     input_split_sizes: Optional[List[int]],
 ) -> torch.Tensor:
-    return _AllToAll.apply(group, input, output_split_sizes, input_split_sizes)
+    if dist.get_world_size(group=group) == 1:
+        return input.contiguous()
+    input = input.contiguous()
+    if output_split_sizes is None:
+        output = torch.empty_like(input)
+    else:
+        output = torch.empty(
+            size=(sum(output_split_sizes), input.size(1)),
+            dtype=input.dtype,
+            device=input.device,
+        )
+    dist.all_to_all_single(
+        output,
+        input,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        group=group,
+    )
+    return output
 
 
 def _preprocess(
     expert_mask: torch.Tensor,
     num_experts: int,
     ep_group: dist.ProcessGroup,
-) -> Tuple[List[int], List[int], torch.Tensor, torch.Tensor]:
+) -> Tuple[List[int], List[int], torch.Tensor]:
     ep_size = ep_group.size()
     num_local_experts = num_experts // ep_size
     rank = dist.get_rank(ep_group)
@@ -88,18 +71,10 @@ def _preprocess(
         :, start_idx:end_idx
     ].contiguous()
     output_splits = num_global_tokens_per_local_expert.sum(dim=1).tolist()
-    num_global_sum_tokens_per_local_expert = num_global_tokens_per_local_expert.sum(
-        dim=0
-    ).to(torch.device("cpu"), non_blocking=True)
     num_global_tokens_per_local_expert = num_global_tokens_per_local_expert.view(
         -1, num_local_experts
-    ).to(torch.device("cpu"), non_blocking=True)
-    return (
-        input_splits,
-        output_splits,
-        num_global_tokens_per_local_expert,
-        num_global_sum_tokens_per_local_expert,
-    )
+    ).to(torch.device("cpu"))
+    return input_splits, output_splits, num_global_tokens_per_local_expert
 
 
 def _permute(
@@ -162,114 +137,43 @@ def _unpermute(
     return unpermuted_tokens
 
 
-def token_pre_all2all(
-    hidden_states: torch.Tensor,
-    expert_mask: torch.Tensor,
-    num_experts: int,
-    input_splits: List[int],
-    output_splits: List[int],
-    num_global_tokens_per_local_expert: torch.Tensor,
-    group: Optional[dist.ProcessGroup] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Size]:
-    group = group or dist.group.WORLD
-    hidden_dim = hidden_states.size(-1)
-    hidden_states = hidden_states.reshape(-1, hidden_dim)
-    org_hidden_states_shape = hidden_states.shape
-    routing_map = expert_mask.sum(dim=1)
-
-    local_permuted_hidden_states, local_input_permutation_mapping = _permute(
-        hidden_states, routing_map
-    )
-    expected_tokens = sum(input_splits)
-    actual_tokens = local_permuted_hidden_states.shape[0]
-    if expected_tokens != actual_tokens:
-        raise RuntimeError(
-            f"EP split mismatch: input_splits sum ({expected_tokens}) != "
-            f"permuted tokens ({actual_tokens})"
-        )
-
-    global_permuted_hidden_states = _all_to_all(
-        group, local_permuted_hidden_states, output_splits, input_splits
-    )
-    num_local_experts = num_experts // dist.get_world_size(group)
-    permute_order = (
-        torch.arange(num_experts).reshape(-1, num_local_experts).T.ravel().tolist()
-    )
-    split_sizes = num_global_tokens_per_local_expert.ravel().tolist()
-    global_permuted_hidden_states = _sort_chunks_by_idxs(
-        global_permuted_hidden_states, split_sizes, permute_order
-    )
-    return (
-        global_permuted_hidden_states,
-        routing_map,
-        local_input_permutation_mapping,
-        org_hidden_states_shape,
-    )
-
-
-def tokens_post_all2all(
-    expert_outputs: torch.Tensor,
-    routing_weights: torch.Tensor,
-    selected_experts: torch.Tensor,
-    num_experts: int,
-    input_splits: List[int],
-    output_splits: List[int],
-    num_global_tokens_per_local_expert: torch.Tensor,
-    routing_map: torch.Tensor,
-    local_input_permutation_mapping: torch.Tensor,
-    org_hidden_states_shape: torch.Size,
-    group: Optional[dist.ProcessGroup] = None,
-) -> torch.Tensor:
-    group = group or dist.group.WORLD
-    num_local_experts = num_experts // dist.get_world_size(group)
-    unpermute_order = (
-        torch.arange(num_experts).reshape(num_local_experts, -1).T.ravel().tolist()
-    )
-    split_sizes = num_global_tokens_per_local_expert.T.ravel().tolist()
-    expert_outputs = _sort_chunks_by_idxs(
-        expert_outputs, split_sizes, unpermute_order
-    )
-    unpermute_outputs = _all_to_all(group, expert_outputs, input_splits, output_splits)
-    weights_idx = _generate_weights_idx(routing_weights, selected_experts, num_experts)
-    unpermute_outputs = _unpermute(
-        unpermute_outputs,
-        weights_idx,
-        org_hidden_states_shape,
-        local_input_permutation_mapping,
-        routing_map,
-    )
-    return unpermute_outputs
-
-
-def expert_forward(
+def _grouped_expert_forward(
     x: torch.Tensor,
-    gate_proj: torch.nn.Linear,
-    up_proj: torch.nn.Linear,
-    down_proj: torch.nn.Linear,
+    tokens_per_local_expert: List[int],
+    w_gate: torch.Tensor,  # (E_local, inter_dim, hidden_dim)
+    w_up: torch.Tensor,    # (E_local, inter_dim, hidden_dim)
+    w_down: torch.Tensor,  # (E_local, hidden_dim, inter_dim)
 ) -> torch.Tensor:
-    gate = torch.nn.functional.silu(gate_proj(x))
-    up = up_proj(x)
-    return down_proj(gate * up)
+    """Ragged grouped GEMM: expert e's SiLU MLP on its token segment."""
+    outputs = []
+    for e, seg in enumerate(torch.split(x, tokens_per_local_expert, dim=0)):
+        gate = torch.nn.functional.silu(seg @ w_gate[e].T)
+        up = seg @ w_up[e].T
+        outputs.append((gate * up) @ w_down[e].T)
+    return torch.cat(outputs, dim=0)
 
 
+@torch.no_grad()
 def solution(
     hidden_states: torch.Tensor,
     gate_weight: torch.Tensor,
     gate_bias: Optional[torch.Tensor],
-    gate_proj: torch.nn.Linear,
-    up_proj: torch.nn.Linear,
-    down_proj: torch.nn.Linear,
+    w_gate: torch.Tensor,
+    w_up: torch.Tensor,
+    w_down: torch.Tensor,
     num_experts: int,
     top_k: int,
     group: Optional[dist.ProcessGroup] = None,
 ) -> torch.Tensor:
     group = group or dist.group.WORLD
-    hidden_dim = hidden_states.size(-1)
-    num_tokens = hidden_states.reshape(-1, hidden_dim).size(0)
+    world_size = dist.get_world_size(group)
+    num_local_experts = num_experts // world_size
+    assert num_local_experts >= 2, "wide EP hosts multiple experts per rank"
 
-    router_logits = torch.nn.functional.linear(
-        hidden_states.reshape(-1, hidden_dim), gate_weight, gate_bias
-    )
+    hidden_dim = hidden_states.size(-1)
+    tokens = hidden_states.reshape(-1, hidden_dim)
+
+    router_logits = torch.nn.functional.linear(tokens, gate_weight, gate_bias)
     routing_weights, selected_experts = torch.topk(
         torch.softmax(router_logits, dim=-1), top_k, dim=-1
     )
@@ -277,40 +181,39 @@ def solution(
         selected_experts, num_classes=num_experts
     ).permute(2, 1, 0)
 
-    input_splits, output_splits, num_global_tokens_per_local_expert, _ = _preprocess(
+    input_splits, output_splits, num_global_tokens_per_local_expert = _preprocess(
         expert_mask, num_experts, group
     )
 
-    (
-        global_permuted_hidden_states,
-        routing_map,
-        local_input_permutation_mapping,
-        org_hidden_states_shape,
-    ) = token_pre_all2all(
-        hidden_states,
-        expert_mask,
-        num_experts,
-        input_splits,
-        output_splits,
-        num_global_tokens_per_local_expert,
-        group,
+    routing_map = expert_mask.sum(dim=1)
+    permuted, permutation_mapping = _permute(tokens, routing_map)
+    org_shape = tokens.shape
+
+    global_tokens = _all_to_all(group, permuted, output_splits, input_splits)
+
+    # Regroup from (source rank, expert)-order to expert-major order.
+    permute_order = (
+        torch.arange(num_experts).reshape(-1, num_local_experts).T.ravel().tolist()
+    )
+    split_sizes = num_global_tokens_per_local_expert.ravel().tolist()
+    global_tokens = _sort_chunks_by_idxs(global_tokens, split_sizes, permute_order)
+
+    tokens_per_local_expert = (
+        num_global_tokens_per_local_expert.sum(dim=0).tolist()
+    )
+    expert_outputs = _grouped_expert_forward(
+        global_tokens, tokens_per_local_expert, w_gate, w_up, w_down
     )
 
-    expert_outputs = expert_forward(
-        global_permuted_hidden_states, gate_proj, up_proj, down_proj
+    # Regroup back to (source rank, expert)-order and return tokens.
+    unpermute_order = (
+        torch.arange(num_experts).reshape(num_local_experts, -1).T.ravel().tolist()
     )
+    back_split_sizes = num_global_tokens_per_local_expert.T.ravel().tolist()
+    expert_outputs = _sort_chunks_by_idxs(expert_outputs, back_split_sizes, unpermute_order)
 
-    out = tokens_post_all2all(
-        expert_outputs,
-        routing_weights,
-        selected_experts,
-        num_experts,
-        input_splits,
-        output_splits,
-        num_global_tokens_per_local_expert,
-        routing_map,
-        local_input_permutation_mapping,
-        org_hidden_states_shape,
-        group,
-    )
-    return out
+    returned = _all_to_all(group, expert_outputs, input_splits, output_splits)
+
+    weights_idx = _generate_weights_idx(routing_weights, selected_experts, num_experts)
+    out = _unpermute(returned, weights_idx, org_shape, permutation_mapping, routing_map)
+    return out.view_as(hidden_states)

@@ -1,3 +1,11 @@
+# DeePMD-style layer-wise Kalman filter optimizer step (data-parallel).
+#
+# Each rank holds the same block structure (num_blocks blocks of identical
+# size). The innovation denominator is all-reduced across ranks, each rank
+# updates its local weight blocks and covariance blocks, and the updated
+# weights are all-gathered so every rank sees every rank's blocks. Inputs are
+# never mutated; per-block updates are independent (batched-GEMM / fusion
+# opportunity) and the weight all-gather is a single fixed-size collective.
 from typing import List, Tuple
 
 import torch
@@ -14,10 +22,12 @@ def solution(
     kalman_nue: float = 0.9987,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], torch.Tensor]:
     weights_num = len(weights)
-    lam = torch.as_tensor(kalman_lambda, dtype=weights[0].dtype, device=weights[0].device)
-    err = error.to(device=weights[0].device, dtype=weights[0].dtype)
+    dtype = weights[0].dtype
+    device = weights[0].device
+    lam = torch.as_tensor(kalman_lambda, dtype=dtype, device=device)
+    err = error.to(device=device, dtype=dtype)
 
-    tmp = 0
+    tmp = torch.zeros((1, 1), dtype=dtype, device=device)
     for i in range(weights_num):
         tmp = tmp + (lam + torch.matmul(torch.matmul(H[i].T, P[i]), H[i]))
 
@@ -26,37 +36,30 @@ def solution(
 
     A = 1 / tmp
 
+    new_weights: List[torch.Tensor] = []
+    new_P: List[torch.Tensor] = []
     for i in range(weights_num):
         K = torch.matmul(P[i], H[i])
-        weights[i] = weights[i] + A * err * K
-        P[i] = (1 / lam) * (P[i] - A * torch.matmul(K, K.T))
+        new_weights.append(weights[i] + A * err * K)
+        new_P.append((1 / lam) * (P[i] - A * torch.matmul(K, K.T)))
 
+    out_weights = new_weights
     if dist.is_initialized():
-        device = weights[0].device
-        local_shape = [tensor.shape[0] for tensor in weights]
+        world_size = dist.get_world_size()
+        block_sizes = [int(w.shape[0]) for w in new_weights]
+        local_flat = torch.cat([w.reshape(-1) for w in new_weights], dim=0).contiguous()
 
-        shape_list = [
-            torch.zeros_like(torch.empty(1), dtype=torch.float64, device=device)
-            for _ in range(dist.get_world_size())
-        ]
-        dist.all_gather_object(shape_list, local_shape)
+        gathered = torch.empty(
+            world_size * local_flat.numel(), dtype=dtype, device=device
+        )
+        dist.all_gather_into_tensor(gathered, local_flat)
 
-        weight_tensor = torch.cat([w.reshape(-1) for w in weights], dim=0).to(torch.float64)
-        world_shape = [sum(inner_list) for inner_list in shape_list]
-
-        weight_list = [
-            torch.zeros(world_shape[i], dtype=torch.float64, device=device)
-            for i in range(len(world_shape))
-        ]
-        dist.all_gather(weight_list, weight_tensor)
-
-        result: List[torch.Tensor] = []
-        for i in range(dist.get_world_size()):
-            result = result + [
-                t.reshape(-1, 1).to(dtype=weights[0].dtype)
-                for t in torch.split(weight_list[i], shape_list[i])
-            ]
-        weights = result
+        out_weights = []
+        for r in range(world_size):
+            rank_flat = gathered[r * local_flat.numel() : (r + 1) * local_flat.numel()]
+            out_weights.extend(
+                t.reshape(-1, 1) for t in torch.split(rank_flat, block_sizes)
+            )
 
     kalman_lambda_next = (
         torch.as_tensor(kalman_nue, dtype=lam.dtype, device=lam.device) * lam
@@ -64,4 +67,4 @@ def solution(
         - torch.as_tensor(kalman_nue, dtype=lam.dtype, device=lam.device)
     )
 
-    return weights, P, kalman_lambda_next
+    return out_weights, new_P, kalman_lambda_next
