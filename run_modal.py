@@ -75,7 +75,13 @@ _MODAL_EVAL_PAIR_TIMEOUT_SEC = int(
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
-    # Upgrade ca-certificates: the CUDA 12.8 base ships an outdated bundle (CVE-2026-111943).
+    # Upgrade ca-certificates from jammy-security: the CUDA 12.8 base ships an outdated bundle
+    # (CVE-2026-111943). Fail the build if the fixed version (20260816*) is not installed.
+    .run_commands(
+        "apt-get update && apt-get install -y --only-upgrade ca-certificates && rm -rf /var/lib/apt/lists/*",
+        "v=$(dpkg-query -W -f='${Version}' ca-certificates) && dpkg --compare-versions \"$v\" ge 20260816"
+        " || { echo \"ca-certificates $v is older than 20260816\"; exit 1; }",
+    )
     .apt_install(
         "ca-certificates", "wget", "xz-utils", "gnupg", "software-properties-common", "git",
     )
